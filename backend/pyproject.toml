@@ -5,10 +5,17 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "apscheduler>=3.11.3",
     "fastapi>=0.140.1",
     "fpdf2>=2.8.7",
+    "google-api-python-client>=2.198.0",
+    "google-auth>=2.56.2",
+    "google-auth-httplib2>=0.4.0",
+    "google-auth-oauthlib>=1.4.0",
+    "groq>=1.6.0",
     "httpx>=0.28.1",
     "python-dotenv>=1.2.2",
+    "razorpay>=2.0.1",
     "supabase>=2.31.0",
     "uvicorn>=0.51.0",
 ]

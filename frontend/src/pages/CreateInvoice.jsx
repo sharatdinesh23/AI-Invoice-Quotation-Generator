@@ -20,47 +20,110 @@ export default function CreateInvoice() {
   
   const [items, setItems] = useState([{ product_id: '', description: '', quantity: 1, rate: 0, amount: 0 }])
 
-  useEffect(() => {
+  // useEffect(() => {
+  //   const fetchData = async () => {
+  //     const resC = await apiFetch('/api/clients')
+  //     const dataC = await resC.json()
+  //     setClients(dataC.clients || [])
+
+  //     const resP = await apiFetch('/api/products')
+  //     const dataP = await resP.json()
+  //     setProducts(dataP.products || [])
+
+  //     if (isEditing) {
+  //       const res = await apiFetch(`/api/invoices/${id}`)
+  //       const data = await res.json()
+  //       const inv = data.invoice
+        
+  //       setClientId(inv.client_id)
+  //       setInvoiceNumber(inv.invoice_number)
+  //       setCurrency(inv.currency || 'USD')
+  //       setStatus(inv.status || 'Draft')
+  //       setDiscount(inv.discount || 0)
+        
+  //       // Calculate tax rate from tax amount and subtotal to pre-fill the input
+  //       const calculatedTaxRate = inv.subtotal > 0 ? ((inv.tax / inv.subtotal) * 100).toFixed(2) : 0
+  //       setTaxRate(calculatedTaxRate)
+
+  //       // Fix #3: Prevent NaN by ensuring all numeric fields are properly parsed as floats
+  //       const formattedItems = data.items.map(item => ({
+  //         ...item,
+  //         quantity: parseFloat(item.quantity) || 1,
+  //         rate: parseFloat(item.rate) || 0,
+  //         amount: parseFloat(item.amount) || 0
+  //       }))
+  //       setItems(formattedItems.length > 0 ? formattedItems : [{ product_id: '', description: '', quantity: 1, rate: 0, amount: 0 }])
+  //     } else {
+  //       const res = await apiFetch('/api/invoices/next-number')
+  //       const data = await res.json()
+  //       setInvoiceNumber(data.next_number)
+  //     }
+  //   }
+  //   fetchData()
+  // }
+
+    useEffect(() => {
     const fetchData = async () => {
-      const resC = await apiFetch('/api/clients')
-      const dataC = await resC.json()
-      setClients(dataC.clients || [])
+      try {
+        // 1. Fetch Clients and Products for the dropdowns
+        const resC = await apiFetch('/api/clients')
+        const dataC = await resC.json()
+        setClients(dataC.clients || [])
 
-      const resP = await apiFetch('/api/products')
-      const dataP = await resP.json()
-      setProducts(dataP.products || [])
+        const resP = await apiFetch('/api/products')
+        const dataP = await resP.json()
+        setProducts(dataP.products || [])
 
-      if (isEditing) {
-        const res = await apiFetch(`/api/invoices/${id}`)
-        const data = await res.json()
-        const inv = data.invoice
-        
-        setClientId(inv.client_id)
-        setInvoiceNumber(inv.invoice_number)
-        setCurrency(inv.currency || 'USD')
-        setStatus(inv.status || 'Draft')
-        setDiscount(inv.discount || 0)
-        
-        // Calculate tax rate from tax amount and subtotal to pre-fill the input
-        const calculatedTaxRate = inv.subtotal > 0 ? ((inv.tax / inv.subtotal) * 100).toFixed(2) : 0
-        setTaxRate(calculatedTaxRate)
+        // 2. Handle Edit Mode vs Create Mode
+        if (isEditing) {
+          const res = await apiFetch(`/api/invoices/${id}`)
+          const data = await res.json()
+          const inv = data.invoice // <--- The actual invoice data is nested here
+          
+          if (inv) {
+            // Set basic details
+            setClientId(inv.client_id || '')
+            setInvoiceNumber(inv.invoice_number || '')
+            setCurrency(inv.currency || 'USD')
+            setStatus(inv.status || 'Draft')
+            setDiscount(inv.discount || 0)
+            
+            // Calculate and set Tax Rate
+            const taxAmount = inv.tax_amount || inv.tax || 0;
+            const calculatedTaxRate = inv.subtotal > 0 ? (taxAmount / inv.subtotal) * 100 : 0
+            setTaxRate(calculatedTaxRate.toFixed(2))
 
-        // Fix #3: Prevent NaN by ensuring all numeric fields are properly parsed as floats
-        const formattedItems = data.items.map(item => ({
-          ...item,
-          quantity: parseFloat(item.quantity) || 1,
-          rate: parseFloat(item.rate) || 0,
-          amount: parseFloat(item.amount) || 0
-        }))
-        setItems(formattedItems.length > 0 ? formattedItems : [{ product_id: '', description: '', quantity: 1, rate: 0, amount: 0 }])
-      } else {
-        const res = await apiFetch('/api/invoices/next-number')
-        const data = await res.json()
-        setInvoiceNumber(data.next_number)
+            // FIX: Read items from inv.items, not data.items!
+            const formattedItems = (inv.items || []).map(item => ({
+              ...item,
+              product_id: item.product_id || '', // Ensure product_id is explicitly set for the dropdown
+              description: item.description || '',
+              quantity: parseFloat(item.quantity) || 1,
+              rate: parseFloat(item.rate) || 0,
+              amount: parseFloat(item.amount) || 0
+            }))
+            
+            // Set the items, or default to one empty row if none exist
+            setItems(formattedItems.length > 0 ? formattedItems : [{ product_id: '', description: '', quantity: 1, rate: 0, amount: 0 }])
+          }
+        } else {
+          // 3. Fetch Next Invoice Number for new invoices
+          const res = await apiFetch('/api/invoices/next-number')
+          if (res.ok) {
+            const data = await res.json()
+            setInvoiceNumber(data.next_number || 'INV-1')
+          } else {
+            setInvoiceNumber('INV-1') 
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching invoice data:", error)
+        if (!isEditing) setInvoiceNumber('INV-1')
       }
     }
     fetchData()
   }, [id, isEditing])
+ 
 
   const addItem = () => {
     setItems([...items, { product_id: '', description: '', quantity: 1, rate: 0, amount: 0 }])
