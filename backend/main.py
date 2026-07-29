@@ -32,7 +32,11 @@ app = FastAPI(title="Freelance Portal API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], 
+    allow_origins=[
+        "http://localhost:5173",
+        "http://100.57.224.161",       # <-- ADD YOUR EC2 PUBLIC IP HERE (no port, or with port 80)
+        "http://100.57.224.161:80"     # <-- ADD THIS TOO just in case
+    ], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
