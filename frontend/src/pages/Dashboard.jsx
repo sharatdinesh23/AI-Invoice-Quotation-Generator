@@ -17,6 +17,9 @@ export default function Dashboard() {
   const [pendingInvoices, setPendingInvoices] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [preferredCurrency, setPreferredCurrency] = useState('USD')
+  const [exchangeRates, setExchangeRates] = useState({})
+  const [downloadLoading, setDownloadLoading] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -30,6 +33,7 @@ export default function Dashboard() {
         }
         setUser(user)
         await fetchDashboardData()
+        await fetchSettings()
       } catch (err) {
         console.error("Auth error:", err)
         navigate('/login')
@@ -63,6 +67,12 @@ export default function Dashboard() {
       setRecentInvoices(data.recent_invoices || [])
       setPendingInvoices(data.pending_invoices || [])
       
+      // Set preferred currency from backend if available
+      if (data.preferred_currency) {
+        setPreferredCurrency(data.preferred_currency)
+        await fetchExchangeRate(data.preferred_currency)
+      }
+      
     } catch (err) {
       console.error("Dashboard fetch error:", err)
       setError(err.message)
@@ -75,6 +85,68 @@ export default function Dashboard() {
   const handleLogout = async () => {
     await supabase.auth.signOut()
     navigate('/login')
+  }
+
+  const fetchSettings = async () => {
+    try {
+      const res = await apiFetch('/api/settings')
+      const data = await res.json()
+      if (data.profile) {
+        setPreferredCurrency(data.profile.preferred_currency || 'USD')
+        // Fetch exchange rate for currency conversion
+        await fetchExchangeRate(data.profile.preferred_currency || 'USD')
+      }
+    } catch (error) {
+      console.error('Error fetching settings:', error)
+    }
+  }
+
+  const fetchExchangeRate = async (targetCurrency) => {
+    try {
+      const res = await fetch(`https://api.exchangerate-api.com/v4/latest/USD`)
+      const data = await res.json()
+      setExchangeRates(data.rates || {})
+    } catch (error) {
+      console.error('Error fetching exchange rate:', error)
+      setExchangeRates({})
+    }
+  }
+
+  const handleDownloadCSV = async () => {
+    setDownloadLoading(true)
+    try {
+      const res = await apiFetch('/api/reports/download-csv')
+      const blob = await res.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `invoices_report_${new Date().toISOString().split('T')[0]}.csv`
+      a.click()
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Error downloading CSV:', error)
+      alert('Failed to download CSV. Please try again.')
+    } finally {
+      setDownloadLoading(false)
+    }
+  }
+
+  const convertAmount = (amount, currency) => {
+    // Convert from original currency to preferred currency using live exchange rates
+    if (!exchangeRates || Object.keys(exchangeRates).length === 0) {
+      return amount
+    }
+    
+    const targetRate = exchangeRates[preferredCurrency] || 1
+    
+    // Convert original currency to USD first, then to preferred currency
+    if (currency in exchangeRates) {
+      const amountInUSD = amount / exchangeRates[currency]
+      return amountInUSD * targetRate
+    }
+    
+    // If currency not found, assume it's already in the correct format
+    return amount
   }
 
   if (loading) {
@@ -104,15 +176,32 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">Dashboard Overview</h2>
-        <span className="text-sm text-gray-500 dark:text-gray-400">Welcome, {user?.email}</span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-gray-500 dark:text-gray-400">Welcome, {user?.email}</span>
+          <button 
+            onClick={handleDownloadCSV} 
+            disabled={downloadLoading}
+            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {downloadLoading ? (
+              <>
+                <span className="animate-spin">⏳</span> Downloading...
+              </>
+            ) : (
+              <>
+                📥 Download Invoices CSV
+              </>
+            )}
+          </button>
+        </div>
       </div>
       
-      {/* Stats Grid */}
+      {/* Stats Grid - Display in native/original currency as per backend data */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard title="Total Clients" value={stats.clients} color="blue" icon="" />
-        <StatCard title="Pending Invoices" value={stats.pending_count} sub={`$${stats.pending_amount?.toFixed(2) || 0}`} color="yellow" icon="⏳" />
+        <StatCard title="Pending Invoices" value={stats.pending_count} sub={`${preferredCurrency} ${stats.pending_amount?.toFixed(2) || 0}`} color="yellow" icon="⏳" />
         <StatCard title="Paid Invoices" value={stats.paid_count} color="green" icon="✅" />
-        <StatCard title="Total Revenue" value={`$${stats.revenue?.toFixed(2) || 0}`} color="purple" icon="💰" />
+        <StatCard title="Total Revenue" value={`${preferredCurrency} ${stats.revenue?.toFixed(2) || 0}`} color="purple" icon="💰" />
       </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -140,7 +229,7 @@ export default function Dashboard() {
                   </div>
                   <div className="flex items-center gap-4">
                     <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">
-                      {inv.currency || 'USD'} {parseFloat(inv.total || 0).toFixed(2)}
+                      {preferredCurrency} {convertAmount(parseFloat(inv.total || 0), inv.currency || 'USD').toFixed(2)}
                     </p>
                     <button 
                       onClick={() => navigate(`/invoices/${inv.id}/view`)} 

@@ -18,7 +18,6 @@ import Quotations from './pages/Quotations'
 import CreateQuotation from './pages/CreateQuotation'
 import PublicInvoiceView from './pages/PublicInvoiceView'
 import Landing from './pages/Landing'
-import Reports from './pages/Reports'
 
 function App() {
   const [session, setSession] = useState(null)
@@ -68,7 +67,6 @@ function App() {
             <Route path="/quotations/new" element={<CreateQuotation />} />
             <Route path="/quotations/:id/edit" element={<CreateQuotation />} />
             <Route path="/settings" element={<Settings />} />
-            <Route path="/reports" element={<Reports />} />
           </Route>
         )}
         
