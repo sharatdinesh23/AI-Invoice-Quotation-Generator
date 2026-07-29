@@ -1,1 +1,3 @@
-Nothing needs to be added to .gitignore since only a source code file (`backend/main.py`) was modified and there are no build artifacts, dependencies, or temporary files in the changes.
+.env
+frontend/.env
+backend/.env
