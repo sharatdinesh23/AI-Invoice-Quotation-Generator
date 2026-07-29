@@ -15,6 +15,7 @@ export default function Settings() {
   const [logoUrl, setLogoUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [taxLabel, setTaxLabel] = useState('GST')
+  const [preferredCurrency, setPreferredCurrency] = useState('USD')
 
   // Password State
   const [newPass, setNewPass] = useState('')
@@ -46,6 +47,7 @@ export default function Settings() {
       setTaxLabel(data.profile.tax_label || 'GST')
       setPrefix(data.profile.invoice_prefix || '')
       setLogoUrl(data.profile.logo_url || '')
+      setPreferredCurrency(data.profile.preferred_currency || 'USD')
     }
   }
 
@@ -82,9 +84,10 @@ export default function Settings() {
       body: JSON.stringify({ 
         organization_name: orgName, 
         gstin, 
-        tax_label: taxLabel, // <-- ADD THIS LINE
+        tax_label: taxLabel,
         invoice_prefix: prefix, 
-        logo_url: logoUrl 
+        logo_url: logoUrl,
+        preferred_currency: preferredCurrency
       })
     })
     alert('Settings saved!')
@@ -303,6 +306,33 @@ export default function Settings() {
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Organization Name</label>
             <input type="text" value={orgName} onChange={(e) => setOrgName(e.target.value)}
               className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Preferred Currency</label>
+            <select 
+              value={preferredCurrency} 
+              onChange={(e) => setPreferredCurrency(e.target.value)}
+              className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100"
+            >
+              <option value="USD">USD - US Dollar</option>
+              <option value="EUR">EUR - Euro</option>
+              <option value="GBP">GBP - British Pound</option>
+              <option value="INR">INR - Indian Rupee</option>
+              <option value="AUD">AUD - Australian Dollar</option>
+              <option value="CAD">CAD - Canadian Dollar</option>
+              <option value="JPY">JPY - Japanese Yen</option>
+              <option value="CNY">CNY - Chinese Yuan</option>
+              <option value="AED">AED - UAE Dirham</option>
+              <option value="SGD">SGD - Singapore Dollar</option>
+              <option value="CHF">CHF - Swiss Franc</option>
+              <option value="NZD">NZD - New Zealand Dollar</option>
+              <option value="ZAR">ZAR - South African Rand</option>
+              <option value="BRL">BRL - Brazilian Real</option>
+              <option value="MXN">MXN - Mexican Peso</option>
+            </select>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              This currency will be used for CSV downloads and amount display
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Tax Type Label</label>

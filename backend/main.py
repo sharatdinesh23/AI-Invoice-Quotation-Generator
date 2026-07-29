@@ -762,17 +762,18 @@ async def get_settings(auth_data: dict = Depends(get_current_user)):
 async def update_settings(request: dict, auth_data: dict = Depends(get_current_user)):
     user = auth_data["user"]
     token = auth_data["token"]
-    # payload = {
-    #     "organization_name": request.get("organization_name"),
-    #     "gstin": request.get("gstin"),
-    #     "tax_label": request.get("tax_label"), # <-- Ensure this is here
-    #     "invoice_prefix": request.get("invoice_prefix"),
-    #     "logo_url": request.get("logo_url")
-    # }
     async with httpx.AsyncClient() as client:
         check_res = await client.get(f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}", headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"})
         exists = len(check_res.json()) > 0
-        profile_data = {"user_id": user.id, "organization_name": request.get("organization_name"), "gstin": request.get("gstin"),"tax_label": request.get("tax_label"), "logo_url": request.get("logo_url"), "invoice_prefix": request.get("invoice_prefix")}
+        profile_data = {
+            "user_id": user.id, 
+            "organization_name": request.get("organization_name"), 
+            "gstin": request.get("gstin"),
+            "tax_label": request.get("tax_label"), 
+            "logo_url": request.get("logo_url"), 
+            "invoice_prefix": request.get("invoice_prefix"),
+            "preferred_currency": request.get("preferred_currency", "USD")
+        }
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo", "Prefer": "return=representation"}
         if not exists:
             await client.post(f"{SUPABASE_URL}/rest/v1/profiles", json=profile_data, headers=headers)
@@ -1776,17 +1777,47 @@ async def download_reports_csv(auth_data: dict = Depends(get_current_user)):
     token = auth_data["token"]
     import csv
     import io
-    
+
     async with httpx.AsyncClient() as client:
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"}
+        
+        # Fetch user's preferred currency from profile
+        profile_res = await client.get(f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user_id}&select=preferred_currency", headers=headers)
+        profile_data = profile_res.json()
+        target_currency = profile_data[0].get('preferred_currency', 'USD') if profile_data else 'USD'
+        
+        # Fetch exchange rates (using free API)
+        exchange_rates = {}
+        try:
+            rate_res = await client.get(f"https://api.exchangerate-api.com/v4/latest/USD")
+            if rate_res.status_code == 200:
+                rate_data = rate_res.json()
+                exchange_rates = rate_data.get('rates', {})
+        except Exception as e:
+            print(f"Error fetching exchange rates: {e}")
+            # Fallback to 1:1 if API fails
+            exchange_rates = {'USD': 1}
+        
         res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user_id}&status=neq.Void&select=*,clients(name)", headers=headers)
         invoices = res.json()
-        
+
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Invoice Number", "Client", "Date", "Status", "Subtotal", "Tax", "Total", "Currency"])
-        
+        writer.writerow(["Invoice Number", "Client", "Date", "Status", "Subtotal", "Tax", "Total", "Original Currency", f"Total ({target_currency})"])
+
         for inv in invoices:
+            original_total = float(inv.get('total', 0))
+            original_currency = inv.get('currency', 'USD')
+            
+            # Convert to target currency
+            # First convert to USD, then to target currency
+            if original_currency in exchange_rates:
+                amount_in_usd = original_total / exchange_rates[original_currency]
+            else:
+                amount_in_usd = original_total  # Assume USD if not found
+            
+            converted_total = amount_in_usd * exchange_rates.get(target_currency, 1)
+            
             writer.writerow([
                 inv.get('invoice_number'),
                 inv.get('clients', {}).get('name', 'Unknown'),
@@ -1794,15 +1825,16 @@ async def download_reports_csv(auth_data: dict = Depends(get_current_user)):
                 inv.get('status'),
                 inv.get('subtotal'),
                 inv.get('tax_amount', inv.get('tax', 0)),
-                inv.get('total'),
-                inv.get('currency', 'USD')
+                f"{original_total:.2f}",
+                original_currency,
+                f"{converted_total:.2f}"
             ])
-            
+
         output.seek(0)
         return StreamingResponse(
             iter([output.getvalue()]),
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=financial_report.csv"}
+            headers={"Content-Disposition": f"attachment; filename=invoices_report_{target_currency}.csv"}
         )
 
 

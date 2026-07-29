@@ -1,44 +1,28 @@
-# Python-generated files
+```
+# Compiled and build artifacts
+*.pyc
 __pycache__/
-*.py[oc]
-build/
+*.o
+*.obj
 dist/
-wheels/
-*.egg-info
+build/
 
-# Virtual environments
-.venv
+# Dependencies
+.venv/
+venv/
+node_modules/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
 .env
+.env.local
+.env.*
 
-backend/.env
-frontend/.env   
-
-backend/__pycache__/
-*/__pycache__
-backend/*.pyc
-
-# Logs
-frontend/logs
-frontend/*.log
-frontend/npm-debug.log*
-frontend/yarn-debug.log*
-frontend/yarn-error.log*
-frontend/pnpm-debug.log*
-frontend/lerna-debug.log*
-
-frontend/node_modules
-frontend/dist
-frontend/dist-ssr
-frontend/*.local
-
-# Editor directories and files
-frontend/.vscode/*
-frontend/!.vscode/extensions.json
-frontend/.idea
-frontend/.DS_Store
-frontend/*.suo
-frontend/*.ntvs*
-frontend/*.njsproj
-frontend/*.sln
-frontend/*.sw?
-example_code
+# Editors
+.vscode/
+.idea/
+```
