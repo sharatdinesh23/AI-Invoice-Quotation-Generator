@@ -1138,24 +1138,47 @@ async def get_dashboard_data(auth_data: dict = Depends(get_current_user)):
     async with httpx.AsyncClient() as client:
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"}
         
-        # 1. Fetch Clients
+        # 1. Fetch user's preferred currency from profile
+        profile_res = await client.get(f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=preferred_currency", headers=headers)
+        profile_data = profile_res.json()
+        target_currency = profile_data[0].get('preferred_currency', 'USD') if profile_data else 'USD'
+        
+        # 2. Fetch exchange rates
+        exchange_rates = {}
+        try:
+            rate_res = await client.get(f"https://api.exchangerate-api.com/v4/latest/USD")
+            if rate_res.status_code == 200:
+                exchange_rates = rate_res.json().get('rates', {})
+        except Exception as e:
+            print(f"Error fetching exchange rates for dashboard: {e}")
+            exchange_rates = {'USD': 1}
+        
+        # 3. Fetch Clients
         clients_res = await client.get(f"{SUPABASE_URL}/rest/v1/clients?user_id=eq.{user.id}&select=id", headers=headers)
         
-        # 2. Fetch ALL invoices for this user
-        invoices_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&select=status,total", headers=headers)
+        # 4. Fetch ALL invoices for this user
+        invoices_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&select=status,total,currency", headers=headers)
         inv_data = invoices_res.json()
         
-        # 3. Group Statuses (Sent and Overdue are treated as Pending)
+        # 5. Group Statuses (Sent and Overdue are treated as Pending)
         pending = [inv for inv in inv_data if inv['status'] in ['Sent', 'Overdue']]
         paid = [inv for inv in inv_data if inv['status'] == 'Paid']
         
-        # 4. Fetch Recent 5 Invoices (with client details)
+        # Helper function to convert amount to target currency
+        def convert_to_target(amount, original_currency):
+            if original_currency in exchange_rates:
+                amount_in_usd = amount / exchange_rates[original_currency]
+            else:
+                amount_in_usd = amount
+            return amount_in_usd * exchange_rates.get(target_currency, 1)
+        
+        # 6. Fetch Recent 5 Invoices (with client details)
         recent_res = await client.get(
             f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&select=*,clients(name)&order=created_at.desc&limit=5", 
             headers=headers
         )
         
-        # 5. Fetch Pending/Overdue Invoices for the "Needs Attention" section
+        # 7. Fetch Pending/Overdue Invoices for the "Needs Attention" section
         pending_inv_res = await client.get(
             f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&select=*,clients(name)&status=in.(Sent,Overdue)&order=created_at.desc&limit=5", 
             headers=headers
@@ -1165,12 +1188,13 @@ async def get_dashboard_data(auth_data: dict = Depends(get_current_user)):
             "stats": {
                 "clients": len(clients_res.json()),
                 "pending_count": len(pending),
-                "pending_amount": sum(float(inv['total']) for inv in pending),
+                "pending_amount": sum(convert_to_target(float(inv['total']), inv.get('currency', 'USD')) for inv in pending),
                 "paid_count": len(paid),
-                "revenue": sum(float(inv['total']) for inv in paid)
+                "revenue": sum(convert_to_target(float(inv['total']), inv.get('currency', 'USD')) for inv in paid)
             },
             "recent_invoices": recent_res.json(),
-            "pending_invoices": pending_inv_res.json()
+            "pending_invoices": pending_inv_res.json(),
+            "preferred_currency": target_currency
         }
 
 # --- RECURRING INVOICES API ---
