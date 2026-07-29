@@ -1,3 +1,16 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_REGION: ap-south-1 # CHANGE THIS to your actual AWS region
+  EC2_HOST: ${{ secrets.EC2_HOST }}
+  EC2_USER: ubuntu
+  EC2_KEY: ${{ secrets.EC2_KEY }}
+
+jobs:
   deploy-backend:
     runs-on: ubuntu-latest
     defaults:
