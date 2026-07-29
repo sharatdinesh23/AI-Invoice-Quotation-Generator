@@ -1141,7 +1141,7 @@ async def get_dashboard_data(auth_data: dict = Depends(get_current_user)):
         # 1. Fetch user's preferred currency from profile
         profile_res = await client.get(f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=preferred_currency", headers=headers)
         profile_data = profile_res.json()
-        target_currency = profile_data[0].get('preferred_currency', 'USD') if profile_data else 'USD'
+        target_currency = profile_data[0].get('preferred_currency', 'USD') if profile_data and len(profile_data) > 0 else 'USD'
         
         # 2. Fetch exchange rates
         exchange_rates = {}
