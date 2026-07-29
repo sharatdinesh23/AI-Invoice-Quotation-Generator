@@ -48,12 +48,12 @@ jobs:
         host: ${{ env.EC2_HOST }}
         username: ${{ env.EC2_USER }}
         key: ${{ env.EC2_KEY }}
-        script: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
-          docker pull ${{ env.BACKEND_IMAGE }}
-          docker stop freelance-backend || true
-          docker rm freelance-backend || true
-          docker run -d --name freelance-backend --restart always -p 8000:8000 --env-file /home/ubuntu/.env ${{ env.BACKEND_IMAGE }}
+                script: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+          sudo docker pull ${{ env.BACKEND_IMAGE }}
+          sudo docker stop freelance-backend || true
+          sudo docker rm freelance-backend || true
+          sudo docker run -d --name freelance-backend --restart always -p 8000:8000 --env-file /home/ubuntu/.env ${{ env.BACKEND_IMAGE }}
 
   deploy-frontend:
     runs-on: ubuntu-latest
@@ -93,9 +93,9 @@ jobs:
         host: ${{ env.EC2_HOST }}
         username: ${{ env.EC2_USER }}
         key: ${{ env.EC2_KEY }}
-        script: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
-          docker pull ${{ env.FRONTEND_IMAGE }}
-          docker stop freelance-frontend || true
-          docker rm freelance-frontend || true
-          docker run -d --name freelance-frontend --restart always -p 80:80 ${{ env.FRONTEND_IMAGE }}
+                script: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+          sudo docker pull ${{ env.FRONTEND_IMAGE }}
+          sudo docker stop freelance-frontend || true
+          sudo docker rm freelance-frontend || true
+          sudo docker run -d --name freelance-frontend --restart always -p 80:80 ${{ env.FRONTEND_IMAGE }}
