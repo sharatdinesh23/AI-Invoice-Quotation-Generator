@@ -1,16 +1,3 @@
-name: Deploy to AWS
-
-on:
-  push:
-    branches: [ main ]
-
-env:
-  AWS_REGION: us-east-1 # CHANGE THIS to your AWS region
-  EC2_HOST: ${{ secrets.EC2_HOST }}
-  EC2_USER: ubuntu
-  EC2_KEY: ${{ secrets.EC2_KEY }}
-
-jobs:
   deploy-backend:
     runs-on: ubuntu-latest
     defaults:
@@ -32,6 +19,12 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
 
+    - name: Get ECR Password
+      id: get-password
+      run: |
+        PASSWORD=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+        echo "password=$PASSWORD" >> $GITHUB_OUTPUT
+
     - name: Build, Tag, and Push Backend Image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -41,6 +34,7 @@ jobs:
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         echo "BACKEND_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+        echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
 
     - name: Deploy Backend to EC2
       uses: appleboy/ssh-action@master
@@ -48,12 +42,13 @@ jobs:
         host: ${{ env.EC2_HOST }}
         username: ${{ env.EC2_USER }}
         key: ${{ env.EC2_KEY }}
-                script: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
-          sudo docker pull ${{ env.BACKEND_IMAGE }}
-          sudo docker stop freelance-backend || true
-          sudo docker rm freelance-backend || true
-          sudo docker run -d --name freelance-backend --restart always -p 8000:8000 --env-file /home/ubuntu/.env ${{ env.BACKEND_IMAGE }}
+        envs: BACKEND_IMAGE,ECR_REGISTRY,AWS_REGION
+      script: |
+        echo "${{ steps.get-password.outputs.password }}" | sudo docker login --username AWS --password-stdin $ECR_REGISTRY
+        sudo docker pull $BACKEND_IMAGE
+        sudo docker stop freelance-backend || true
+        sudo docker rm freelance-backend || true
+        sudo docker run -d --name freelance-backend --restart always -p 8000:8000 --env-file /home/ubuntu/.env $BACKEND_IMAGE
 
   deploy-frontend:
     runs-on: ubuntu-latest
@@ -77,6 +72,12 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
 
+    - name: Get ECR Password
+      id: get-password
+      run: |
+        PASSWORD=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+        echo "password=$PASSWORD" >> $GITHUB_OUTPUT
+
     - name: Build, Tag, and Push Frontend Image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -86,6 +87,7 @@ jobs:
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         echo "FRONTEND_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+        echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
 
     - name: Deploy Frontend to EC2
       uses: appleboy/ssh-action@master
@@ -93,9 +95,10 @@ jobs:
         host: ${{ env.EC2_HOST }}
         username: ${{ env.EC2_USER }}
         key: ${{ env.EC2_KEY }}
-                script: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | sudo docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
-          sudo docker pull ${{ env.FRONTEND_IMAGE }}
-          sudo docker stop freelance-frontend || true
-          sudo docker rm freelance-frontend || true
-          sudo docker run -d --name freelance-frontend --restart always -p 80:80 ${{ env.FRONTEND_IMAGE }}
+        envs: FRONTEND_IMAGE,ECR_REGISTRY
+      script: |
+        echo "${{ steps.get-password.outputs.password }}" | sudo docker login --username AWS --password-stdin $ECR_REGISTRY
+        sudo docker pull $FRONTEND_IMAGE
+        sudo docker stop freelance-frontend || true
+        sudo docker rm freelance-frontend || true
+        sudo docker run -d --name freelance-frontend --restart always -p 80:80 $FRONTEND_IMAGE
