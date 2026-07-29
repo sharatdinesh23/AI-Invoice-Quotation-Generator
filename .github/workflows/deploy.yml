@@ -5,7 +5,7 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: ap-south-1
+  AWS_REGION: us-east-1
   EC2_HOST: ${{ secrets.EC2_HOST }}
   EC2_USER: ubuntu
   EC2_KEY: ${{ secrets.EC2_KEY }}
