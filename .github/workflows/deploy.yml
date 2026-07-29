@@ -5,7 +5,7 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: ap-south-1 # CHANGE THIS to your actual AWS region
+  AWS_REGION: ap-south-1
   EC2_HOST: ${{ secrets.EC2_HOST }}
   EC2_USER: ubuntu
   EC2_KEY: ${{ secrets.EC2_KEY }}
@@ -56,12 +56,12 @@ jobs:
         username: ${{ env.EC2_USER }}
         key: ${{ env.EC2_KEY }}
         envs: BACKEND_IMAGE,ECR_REGISTRY,AWS_REGION
-      script: |
-        echo "${{ steps.get-password.outputs.password }}" | sudo docker login --username AWS --password-stdin $ECR_REGISTRY
-        sudo docker pull $BACKEND_IMAGE
-        sudo docker stop freelance-backend || true
-        sudo docker rm freelance-backend || true
-        sudo docker run -d --name freelance-backend --restart always -p 8000:8000 --env-file /home/ubuntu/.env $BACKEND_IMAGE
+        script: |
+          echo "${{ steps.get-password.outputs.password }}" | sudo docker login --username AWS --password-stdin $ECR_REGISTRY
+          sudo docker pull $BACKEND_IMAGE
+          sudo docker stop freelance-backend || true
+          sudo docker rm freelance-backend || true
+          sudo docker run -d --name freelance-backend --restart always -p 8000:8000 --env-file /home/ubuntu/.env $BACKEND_IMAGE
 
   deploy-frontend:
     runs-on: ubuntu-latest
@@ -109,9 +109,9 @@ jobs:
         username: ${{ env.EC2_USER }}
         key: ${{ env.EC2_KEY }}
         envs: FRONTEND_IMAGE,ECR_REGISTRY
-      script: |
-        echo "${{ steps.get-password.outputs.password }}" | sudo docker login --username AWS --password-stdin $ECR_REGISTRY
-        sudo docker pull $FRONTEND_IMAGE
-        sudo docker stop freelance-frontend || true
-        sudo docker rm freelance-frontend || true
-        sudo docker run -d --name freelance-frontend --restart always -p 80:80 $FRONTEND_IMAGE
+        script: |
+          echo "${{ steps.get-password.outputs.password }}" | sudo docker login --username AWS --password-stdin $ECR_REGISTRY
+          sudo docker pull $FRONTEND_IMAGE
+          sudo docker stop freelance-frontend || true
+          sudo docker rm freelance-frontend || true
+          sudo docker run -d --name freelance-frontend --restart always -p 80:80 $FRONTEND_IMAGE
