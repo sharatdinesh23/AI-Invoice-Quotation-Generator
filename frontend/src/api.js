@@ -11,7 +11,7 @@ export const apiFetch = async (endpoint, options = {}) => {
     ...options.headers,
   }
 
-  const response = await fetch(`http://localhost:8000${endpoint}`, {
+  const response = await fetch(`http://3.80.44.215:8000${endpoint}`, {
     ...options,
     headers,
   })
