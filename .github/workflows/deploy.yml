@@ -146,8 +146,26 @@ jobs:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         ECR_REPOSITORY: freelance-frontend
         IMAGE_TAG: ${{ github.sha }}
+        VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+        VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        # Verify secrets are available
+        if [ -z "$VITE_SUPABASE_URL" ]; then
+          echo "ERROR: VITE_SUPABASE_URL is empty!"
+          exit 1
+        fi
+        if [ -z "$VITE_SUPABASE_ANON_KEY" ]; then
+          echo "ERROR: VITE_SUPABASE_ANON_KEY is empty!"
+          exit 1
+        fi
+        echo "Supabase URL is set (value hidden)"
+        echo "Supabase Anon Key is set (value hidden)"
+        
+        docker build \
+          --no-cache \
+          --build-arg VITE_SUPABASE_URL="$VITE_SUPABASE_URL" \
+          --build-arg VITE_SUPABASE_ANON_KEY="$VITE_SUPABASE_ANON_KEY" \
+          -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         echo "FRONTEND_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
         echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
