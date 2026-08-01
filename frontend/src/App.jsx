@@ -64,10 +64,10 @@ function App() {
             <Route path="/invoices/:id/edit" element={<CreateInvoice />} />
             <Route path="/recurring" element={<RecurringInvoices />} />
             <Route path="/recurring/new" element={<CreateRecurringInvoice />} />
-            <Route path=\"/quotations\" element={<Quotations />} />
-            <Route path=\"/quotations/new\" element={<CreateQuotation />} />
-            <Route path=\"/quotations/:id/edit\" element={<CreateQuotation />} />
-            <Route path=\"/settings\" element={<Settings />} />
+            <Route path="/quotations" element={<Quotations />} />
+            <Route path="/quotations/new" element={<CreateQuotation />} />
+            <Route path="/quotations/:id/edit" element={<CreateQuotation />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="/payment-settings" element={<PaymentSettings />} />
           </Route>
         )}
