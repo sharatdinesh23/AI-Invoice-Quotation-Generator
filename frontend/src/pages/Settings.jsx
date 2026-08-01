@@ -16,6 +16,8 @@ export default function Settings() {
   const [loading, setLoading] = useState(false)
   const [taxLabel, setTaxLabel] = useState('GST')
   const [preferredCurrency, setPreferredCurrency] = useState('USD')
+  const [subPlan, setSubPlan] = useState('free')
+  const [subStatus, setSubStatus] = useState('inactive')
 
   // Password State
   const [newPass, setNewPass] = useState('')
@@ -48,6 +50,9 @@ export default function Settings() {
       setPrefix(data.profile.invoice_prefix || '')
       setLogoUrl(data.profile.logo_url || '')
       setPreferredCurrency(data.profile.preferred_currency || 'USD')
+
+      setSubPlan(data.profile.subscription_plan || 'free')
+      setSubStatus(data.profile.subscription_status || 'inactive')
     }
   }
 
@@ -334,16 +339,17 @@ export default function Settings() {
               This currency will be used for CSV downloads and amount display
             </p>
           </div>
-          <div>
+                    <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Tax Type Label</label>
             <select 
-              value={gstin ? 'GST' : 'VAT'} // Simplified logic, you can bind this to a new state variable like `taxLabel`
-              onChange={(e) => { /* update taxLabel state and save to backend */ }}
+              value={taxLabel} 
+              onChange={(e) => setTaxLabel(e.target.value)}
               className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100"
             >
               <option value="GST">GST (India, Australia, etc.)</option>
               <option value="VAT">VAT (Europe, UK, UAE, etc.)</option>
               <option value="Sales Tax">Sales Tax (USA, etc.)</option>
+              <option value="Tax">Generic Tax</option>
               <option value="None">No Tax</option>
             </select>
           </div>
@@ -371,6 +377,92 @@ export default function Settings() {
       </form>
 
       {/* ============ SECURITY ============ */}
+      {/* <div className="bg-gradient-to-r from-purple-600 to-blue-600 p-6 rounded-xl shadow-lg text-white space-y-4">
+        <h3 className="text-xl font-bold">Unlock Pro Features 🚀</h3>
+        <p className="text-purple-100 text-sm">Get unlimited invoices, recurring billing, and AI follow-ups for ₹299/mo.</p>
+        <button onClick={async () => {
+          const orderRes = await apiFetch('/api/subscription/create-checkout', { method: 'POST' })
+          const orderData = await orderRes.json()
+          const rzp = new window.Razorpay({
+            key: orderData.key_id, amount: orderData.amount, currency: orderData.currency, name: "FreelanceOS", description: "Pro Subscription", order_id: orderData.order_id,
+            handler: async (response) => {
+              await apiFetch('/api/subscription/activate', { method: 'POST', body: JSON.stringify(response) })
+              alert('🎉 Upgraded to Pro!'); window.location.reload()
+            }
+          })
+          rzp.open()
+        }} className="px-6 py-2 bg-white text-purple-700 rounded-lg font-bold hover:bg-gray-100 transition">
+          Upgrade to Pro - ₹299/mo
+        </button>
+      </div> */}
+{/* ============ SUBSCRIPTION MANAGEMENT ============ */}
+{subPlan === 'pro' ? (
+  <div className={`p-6 rounded-xl shadow-lg text-white space-y-4 ${
+    subStatus === 'canceled' 
+      ? 'bg-gradient-to-r from-orange-600 to-amber-600' 
+      : 'bg-gradient-to-r from-green-600 to-emerald-600'
+  }`}>
+    <h3 className="text-xl font-bold">
+      {subStatus === 'canceled' ? 'Pro Plan Canceling ⏳' : 'Pro Plan Active ✅'}
+    </h3>
+    <p className="text-sm opacity-90">
+      {subStatus === 'canceled' 
+        ? 'Your Pro features will remain active until the end of your current billing cycle. You won\'t be charged next month.'
+        : 'You have unlimited invoices, recurring billing, and AI follow-ups.'}
+    </p>
+    {subStatus !== 'canceled' && (
+      <button 
+        onClick={async () => {
+          if(!window.confirm("Are you sure? Your Pro features will remain active until the end of your current billing cycle.")) return;
+          const res = await apiFetch('/api/subscription/cancel', { method: 'POST' })
+          if(res.ok) {
+            alert('Subscription canceled. You will keep Pro access until the end of your billing cycle.');
+            window.location.reload();
+          }
+        }} 
+        className="px-6 py-2 bg-white text-orange-700 rounded-lg font-bold hover:bg-gray-100 transition"
+      >
+        Cancel Subscription
+      </button>
+    )}
+  </div>
+      ) : (
+        <div className="bg-gradient-to-r from-purple-600 to-blue-600 p-6 rounded-xl shadow-lg text-white space-y-4">
+          <h3 className="text-xl font-bold">Unlock Pro Features 🚀</h3>
+          <p className="text-purple-100 text-sm">Get unlimited invoices, recurring billing, and AI follow-ups for ₹299/mo.</p>
+          <button 
+            onClick={async () => {
+              const orderRes = await apiFetch('/api/subscription/create-checkout', { method: 'POST' })
+              const orderData = await orderRes.json()
+              
+              const rzp = new window.Razorpay({
+                key: orderData.key_id,
+                name: "FreelanceOS Pro",
+                description: "Monthly Subscription (₹299/mo)",
+                subscription_id: orderData.subscription_id,
+                handler: async (response) => {
+                  // Call the NEW dedicated activation endpoint
+                  const res = await apiFetch('/api/subscription/activate', { method: 'POST' })
+                  
+                  if (res.ok) {
+                    alert('🎉 Upgraded to Pro!'); 
+                    window.location.reload()
+                  } else {
+                    alert('Payment successful, but activation failed. Please contact support.');
+                  }
+                },
+              })
+              rzp.open()
+            }} 
+            className="px-6 py-2 bg-white text-purple-700 rounded-lg font-bold hover:bg-gray-100 transition"
+          >
+            Subscribe to Pro - ₹299/mo
+          </button>
+        </div>
+      )}
+
+      {/* ============ SECURITY ============ */}
+      {/* <form onSubmit={changePassword} className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 space-y-4"></form> */}
       <form onSubmit={changePassword} className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 space-y-4">
         <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 border-b border-gray-200 dark:border-gray-700 pb-2">Security</h3>
         <div className="max-w-md">

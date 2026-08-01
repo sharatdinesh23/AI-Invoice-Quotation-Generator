@@ -32,7 +32,11 @@ app = FastAPI(title="Freelance Portal API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], 
+    allow_origins=[
+        "http://localhost:5173",
+        "http://100.57.224.161",       # <-- ADD YOUR EC2 PUBLIC IP HERE (no port, or with port 80)
+        "http://100.57.224.161:80"     # <-- ADD THIS TOO just in case
+    ], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -59,6 +63,46 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except Exception as e:
         print(f"AUTH EXCEPTION: {e}")
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+
+async def require_pro_plan(auth_data: dict = Depends(get_current_user)):
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=subscription_plan,subscription_status,current_period_end",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
+        )
+        
+        if not res.json():
+            raise HTTPException(status_code=403, detail="Please upgrade to Pro.")
+        
+        profile = res.json()[0]
+        plan = profile.get('subscription_plan', 'free')
+        status = profile.get('subscription_status', 'inactive')
+        period_end = profile.get('current_period_end')
+        
+        # Check if subscription has expired
+        if plan == 'pro' and period_end:
+            from datetime import datetime
+            try:
+                end_date = datetime.fromisoformat(period_end.replace('Z', '+00:00'))
+                if datetime.utcnow() > end_date:
+                    # Subscription expired, downgrade user
+                    await client.patch(
+                        f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
+                        json={"subscription_plan": "free", "subscription_status": "inactive"},
+                        headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"}
+                    )
+                    raise HTTPException(status_code=403, detail="Your Pro subscription has expired. Please renew.")
+            except:
+                pass
+        
+        if plan != 'pro':
+            raise HTTPException(status_code=403, detail="This is a Pro feature. Please upgrade.")
+    
+    return auth_data
+
 
 # --- CORE ROUTES ---
 @app.get("/")
@@ -1006,7 +1050,7 @@ async def get_gmail_status(auth_data: dict = Depends(get_current_user)):
 #             raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
 
 @app.post("/api/invoices/{invoice_id}/send")
-async def send_invoice_email(invoice_id: str, request: dict, auth_data: dict = Depends(get_current_user)):
+async def send_invoice_email(invoice_id: str, request: dict, auth_data: dict = Depends(require_pro_plan)):
     user = auth_data["user"]
     token = auth_data["token"]
     
@@ -1201,14 +1245,14 @@ async def get_dashboard_data(auth_data: dict = Depends(get_current_user)):
 
 # --- RECURRING INVOICES API ---
 @app.get("/api/recurring")
-async def get_recurring(auth_data: dict = Depends(get_current_user)):
+async def get_recurring(auth_data: dict = Depends(require_pro_plan)):
     token = auth_data["token"]
     async with httpx.AsyncClient() as client:
         res = await client.get(f"{SUPABASE_URL}/rest/v1/recurring_invoices?user_id=eq.{auth_data['user'].id}&select=*,clients(name),recurring_invoice_items(*)", headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"})
         return {"recurring": res.json()}
 
 @app.post("/api/recurring")
-async def create_recurring(request: dict, auth_data: dict = Depends(get_current_user)):
+async def create_recurring(request: dict, auth_data: dict = Depends(require_pro_plan)):
     user = auth_data["user"]
     token = auth_data["token"]
     
@@ -1255,14 +1299,14 @@ async def create_recurring(request: dict, auth_data: dict = Depends(get_current_
     return {"message": "Recurring invoice created"}
 
 @app.patch("/api/recurring/{rec_id}")
-async def update_recurring_status(rec_id: str, request: dict, auth_data: dict = Depends(get_current_user)):
+async def update_recurring_status(rec_id: str, request: dict, auth_data: dict = Depends(require_pro_plan)):
     token = auth_data["token"]
     async with httpx.AsyncClient() as client:
         await client.patch(f"{SUPABASE_URL}/rest/v1/recurring_invoices?id=eq.{rec_id}&user_id=eq.{auth_data['user'].id}", json={"status": request["status"]}, headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"})
     return {"message": "Status updated"}
 
 @app.delete("/api/recurring/{rec_id}")
-async def delete_recurring(rec_id: str, auth_data: dict = Depends(get_current_user)):
+async def delete_recurring(rec_id: str, auth_data: dict = Depends(require_pro_plan)):
     token = auth_data["token"]
     async with httpx.AsyncClient() as client:
         await client.delete(f"{SUPABASE_URL}/rest/v1/recurring_invoices?id=eq.{rec_id}&user_id=eq.{auth_data['user'].id}", headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"})
@@ -1648,6 +1692,112 @@ async def razorpay_webhook(request: Request):
     return {"status": "success"}
 
 
+@app.post("/api/webhooks/razorpay-subscription")
+async def razorpay_subscription_webhook(request: Request):
+    webhook_secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
+    signature = request.headers.get("x-razorpay-signature")
+    body = await request.body()
+    
+    # Verify signature
+    expected_signature = hmac.new(
+        webhook_secret.encode(),
+        body,
+        hashlib.sha256
+    ).hexdigest()
+    
+    if signature != expected_signature:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    
+    payload = json.loads(body)
+    event = payload.get("event")
+    
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "apikey": SUPABSE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}",
+            "Content-Type": "application/json",
+            "Accept-Profile": "freelancing_demo",
+            "Content-Profile": "freelancing_demo"
+        }
+        
+        if event == "subscription.charged":
+            # A payment was made (initial or recurring)
+            sub_payload = payload.get("payload", {}).get("subscription", {}).get("entity", {})
+            payment_payload = payload.get("payload", {}).get("payment", {}).get("entity", {})
+            
+            sub_id = sub_payload.get("id")
+            payment_id = payment_payload.get("id")
+            amount = payment_payload.get("amount", 0) / 100  # Convert paise to rupees
+            currency = payment_payload.get("currency", "INR")
+            
+            # Find user by subscription ID
+            user_res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/profiles?razorpay_subscription_id=eq.{sub_id}&select=id",
+                headers=headers
+            )
+            
+            if user_res.json():
+                user_id = user_res.json()[0]["id"]
+                
+                # Store payment record
+                await client.post(
+                    f"{SUPABASE_URL}/rest/v1/razorpay_payments",
+                    json={
+                        "user_id": user_id,
+                        "razorpay_payment_id": payment_id,
+                        "razorpay_subscription_id": sub_id,
+                        "amount": amount,
+                        "currency": currency,
+                        "status": "captured"
+                    },
+                    headers=headers
+                )
+                
+                # Update current_period_end (1 month from now)
+                from datetime import datetime, timedelta
+                next_billing = datetime.utcnow() + timedelta(days=30)
+                
+                await client.patch(
+                    f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user_id}",
+                    json={
+                        "subscription_plan": "pro",
+                        "subscription_status": "active",
+                        "current_period_end": next_billing.isoformat()
+                    },
+                    headers=headers
+                )
+                
+                print(f"✅ Payment {payment_id} recorded for user {user_id}")
+        
+        elif event == "subscription.cancelled":
+            # Subscription was fully cancelled (after cycle end)
+            sub_payload = payload.get("payload", {}).get("subscription", {}).get("entity", {})
+            sub_id = sub_payload.get("id")
+            
+            # Find user and downgrade to free
+            user_res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/profiles?razorpay_subscription_id=eq.{sub_id}&select=id",
+                headers=headers
+            )
+            
+            if user_res.json():
+                user_id = user_res.json()[0]["id"]
+                
+                await client.patch(
+                    f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user_id}",
+                    json={
+                        "subscription_plan": "free",
+                        "subscription_status": "inactive",
+                        "razorpay_subscription_id": None
+                    },
+                    headers=headers
+                )
+                
+                print(f"✅ User {user_id} downgraded to free after subscription ended")
+    
+    return {"status": "ok"}
+
+
 # --- HELPER: Send Payment Success Auto-Email ---
 async def send_payment_success_email(invoice: dict, client: httpx.AsyncClient, headers: dict):
     # 1. Get Gmail tokens for this user
@@ -1865,6 +2015,113 @@ async def download_reports_csv(auth_data: dict = Depends(get_current_user)):
             headers={"Content-Disposition": f"attachment; filename=invoices_report_{target_currency}.csv"}
         )
 
+
+import time # Add this to your top imports if not already there
+
+@app.post("/api/subscription/activate")
+async def activate_subscription(auth_data: dict = Depends(get_current_user)):
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        # This ONLY updates the subscription columns, protecting your other settings
+        res = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
+            json={"subscription_plan": "pro", "subscription_status": "active"},
+            headers={
+                "apikey": SUPABASE_KEY, 
+                "Authorization": f"Bearer {token}", 
+                "Content-Type": "application/json", 
+                "Accept-Profile": "freelancing_demo", 
+                "Content-Profile": "freelancing_demo"
+            }
+        )
+        
+        if res.status_code >= 400:
+            print(f"❌ DB Update Failed: {res.text}")
+            raise HTTPException(status_code=500, detail="Failed to activate subscription in database")
+            
+    return {"message": "Subscription activated successfully"}
+
+
+@app.post("/api/subscription/create-checkout")
+async def create_subscription_checkout(auth_data: dict = Depends(get_current_user)):
+    plan_id = os.environ.get("RAZORPAY_PLAN_ID")
+    if not plan_id:
+        raise HTTPException(status_code=500, detail="Razorpay Plan ID not configured in .env")
+    print(f"Plan ID is {plan_id}")
+    # Create a 12-month subscription
+    sub_data = {
+        "plan_id": plan_id,
+        "customer_notify": 1,
+        "quantity": 1,
+        "total_count": 12,
+        "start_at": int(time.time()) + 120, # Starts in 1 hour
+        "expire_by": int(time.time()) + (365 * 24 * 3600),
+        "notes": {"user_id": auth_data["user"].id}
+    }
+    subscription = razorpay_client.subscription.create(data=sub_data)
+    
+    # Save subscription ID to DB immediately
+    async with httpx.AsyncClient() as client:
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{auth_data['user'].id}",
+            json={"razorpay_subscription_id": subscription['id'], "subscription_status": "pending"},
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {auth_data['token']}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"}
+        )
+        
+    return {"subscription_id": subscription['id'], "key_id": os.environ.get("RAZORPAY_KEY_ID")}
+
+@app.post("/api/subscription/cancel")
+async def cancel_subscription(auth_data: dict = Depends(get_current_user)):
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        # 1. Get subscription ID
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=razorpay_subscription_id,current_period_end", 
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
+        )
+        profile = res.json()[0] if res.json() else {}
+        sub_id = profile.get("razorpay_subscription_id")
+        
+        if not sub_id:
+            raise HTTPException(status_code=400, detail="No active subscription found")
+        
+        # 2. Cancel in Razorpay (at cycle end)
+        try:
+            razorpay_client.subscription.cancel(sub_id, {"cancel_at_cycle_end": 1})
+            print(f"✅ Razorpay subscription {sub_id} marked for cancellation at cycle end.")
+        except Exception as e:
+            error_msg = str(e)
+            if "no billing cycle is going on" in error_msg or "already cancelled" in error_msg.lower():
+                print(f"⚠️ Razorpay cancellation skipped: {error_msg}")
+            else:
+                print(f"❌ Razorpay cancellation failed: {error_msg}")
+        
+        # 3. Update DB: Keep Pro plan, but mark as canceled
+        # The user will keep Pro access until current_period_end
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}", 
+            json={"subscription_status": "canceled"}, 
+            headers={
+                "apikey": SUPABASE_KEY, 
+                "Authorization": f"Bearer {token}", 
+                "Content-Type": "application/json", 
+                "Accept-Profile": "freelancing_demo", 
+                "Content-Profile": "freelancing_demo"
+            }
+        )
+        
+    return {"message": "Subscription will remain active until the end of your current billing cycle. You won't be charged next month."}
+
+
+@app.post("/api/subscription/activate")
+async def activate_pro_plan(auth_data: dict = Depends(get_current_user)):
+    async with httpx.AsyncClient() as client:
+        await client.patch(f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{auth_data['user'].id}", json={"subscription_plan": "pro"}, headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {auth_data['token']}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"})
+    return {"message": "Upgraded!"}
 
 
 
