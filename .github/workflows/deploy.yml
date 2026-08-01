@@ -38,6 +38,14 @@ jobs:
         PASSWORD=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
         echo "password=$PASSWORD" >> $GITHUB_OUTPUT
 
+    - name: Make .env for build
+      working-directory: ./frontend
+      run: |
+        echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}" > .env
+        echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}" >> .env
+        echo "VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}" >> .env    
+
+
     - name: Build, Tag, and Push Backend Image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
