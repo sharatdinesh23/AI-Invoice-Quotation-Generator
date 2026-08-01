@@ -109,11 +109,7 @@ export default function PaymentSettings() {
         }
         payload.bank_account_number = accountNumber
         payload.ifsc_code = ifscCode
-        payload.payout_destination_value = JSON.stringify({
-          account_number: accountNumber,
-          ifsc: ifscCode,
-          name: accountHolderName
-        })
+        // Don't send payout_destination_value manually - backend will create it from bank details
       } else if (payoutType === 'upi') {
         if (!upiId) {
           alert('Please provide UPI ID')
@@ -121,19 +117,31 @@ export default function PaymentSettings() {
           return
         }
         payload.upi_id = upiId
-        payload.payout_destination_value = upiId
+        // Don't send payout_destination_value manually - backend will use upi_id
       }
       
-      await apiFetch('/api/payment-account/update-details', {
+      console.log('Sending payload:', payload)
+      
+      const response = await apiFetch('/api/payment-account/update-details', {
         method: 'POST',
         body: JSON.stringify(payload)
       })
       
+      const result = await response.json()
+      console.log('Response:', result)
+      
       alert('Payment details saved successfully!')
       fetchAccountStatus()
     } catch (error) {
-      const errData = await error.response?.json()
-      alert(errData?.detail || 'Failed to save payment details')
+      console.error('Error saving details:', error)
+      let errorMessage = 'Failed to save payment details'
+      try {
+        const errData = await error.response?.json()
+        errorMessage = errData?.detail || errorMessage
+      } catch (e) {
+        // Ignore parsing error
+      }
+      alert(errorMessage)
     } finally {
       setSaving(false)
     }
