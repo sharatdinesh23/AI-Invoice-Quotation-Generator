@@ -119,6 +119,16 @@ jobs:
         echo "GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}" >> .env
         echo "ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}" >> .env
 
+    - name: Check .env file exists
+      working-directory: ./frontend
+      run: |
+        echo "=== Checking .env file ==="
+        ls -la .env
+        echo "=== .env contents (masked) ==="
+        cat .env | sed 's/=.*/=***/'
+        echo "=== File size ==="
+        wc -c .env
+
 
     - name: Build, Tag, and Push Frontend Image
       env:
