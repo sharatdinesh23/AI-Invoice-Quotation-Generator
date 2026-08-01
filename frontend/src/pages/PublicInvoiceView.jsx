@@ -14,7 +14,7 @@ export default function PublicInvoiceView() {
 
   const fetchInvoice = async () => {
     try {
-      const res = await fetch(`http://localhost:8000/api/public/invoices/${id}`)
+      const res = await fetch(`http://127.0.0.1:8000/api/public/invoices/${id}`)
       const data = await res.json()
       setInvoice(data.invoice)
     } catch (error) {
@@ -28,7 +28,7 @@ export default function PublicInvoiceView() {
     setProcessing(true)
     try {
       // 1. Create Order on Backend
-      const orderRes = await fetch('http://localhost:8000/api/public/payments/create-order', {
+      const orderRes = await fetch('http://127.0.0.1:8000/api/public/payments/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ invoice_id: id })
@@ -38,14 +38,14 @@ export default function PublicInvoiceView() {
       // 2. Open Razorpay Checkout
       const options = {
         key: orderData.key_id,
-        amount: orderData.amount,
+        amount: orderData.amount_paise,
         currency: orderData.currency,
         name: invoice.profile?.organization_name || "Freelancer",
         description: `Payment for Invoice ${invoice.invoice_number}`,
         order_id: orderData.order_id,
         handler: async function (response) {
           // 3. Verify Payment on Backend
-          const verifyRes = await fetch('http://localhost:8000/api/public/payments/verify', {
+          const verifyRes = await fetch('http://127.0.0.1:8000/api/public/payments/verify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -92,11 +92,7 @@ export default function PublicInvoiceView() {
 
   const handleDownloadPDF = async () => {
   try {
-    const res = await fetch(`http://localhost:8000/api/invoices/${id}/pdf`, {
-      headers: { "Authorization": `Bearer ${localStorage.getItem('sb-...-auth-token')}` } // Note: Public PDF endpoint might need a tweak, let's use the public one
-    })
-    // Actually, let's create a quick public PDF endpoint or just use the existing one with a public flag. 
-    // For now, let's add a simple "Print" button which browsers can "Save as PDF"
+    // For public invoice view, just use browser print which can save as PDF
     window.print()
   } catch (error) {
     console.error("Error:", error)

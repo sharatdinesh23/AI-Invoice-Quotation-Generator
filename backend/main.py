@@ -1583,31 +1583,66 @@ async def create_payment_order(request: dict):
             "Accept-Profile": "freelancing_demo"
         }
         
-        # Fetch total, currency, and invoice_number
+        # Fetch invoice details including user_id for commission calculation
         inv_res = await client.get(
-            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=total,currency,invoice_number", 
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=total,currency,invoice_number,user_id", 
             headers=headers
         )
         invoice = inv_res.json()[0]
         
-        # Razorpay requires amount in the smallest currency unit (e.g., paise for INR)
-        amount_in_paise = int(float(invoice['total']) * 100) 
+        # Get freelancer profile for commission calculation
+        profile_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}&select=commission_percentage,payment_integration_enabled,razorpay_account_id,payout_destination_value",
+            headers=headers
+        )
+        profile = profile_res.json()[0] if profile_res.json() else {}
         
-        # FIX: invoice_id is exactly 36 characters, which is safely under Razorpay's 40-char limit
+        amount_in_paise = int(float(invoice['total']) * 100)
+        currency = invoice.get('currency', 'INR')
+        
+        # Calculate commission and payout amounts
+        commission_amount = 0
+        freelancer_amount = amount_in_paise
+        account_transfers = []
+        
+        # Check if freelancer has enabled payment integration and has payout details
+        if profile.get("payment_integration_enabled") and profile.get("razorpay_account_id"):
+            commission_pct = float(profile.get("commission_percentage", 2.0))
+            commission_amount = int(amount_in_paise * (commission_pct / 100))
+            freelancer_amount = amount_in_paise - commission_amount
+            
+            # Create account transfer for Razorpay Route
+            account_transfers.append({
+                "account": profile["razorpay_account_id"],
+                "amount": freelancer_amount,
+                "currency": currency,
+                "on_hold": 0,
+                "reference_id": f"inv_{invoice_id}"
+            })
+        
         order_data = {
             "amount": amount_in_paise,
-            "currency": invoice.get('currency', 'INR'),
-            "receipt": invoice_id, 
-            "payment_capture": 1 # Auto-capture
+            "currency": currency,
+            "receipt": invoice_id,
+            "payment_capture": 1
         }
         
+        # Add account transfers if applicable
+        if account_transfers:
+            order_data["account_transfers"] = account_transfers
+        
         order = razorpay_client.order.create(data=order_data)
+        
         return {
             "order_id": order['id'], 
-            "amount": amount_in_paise, 
+            "amount": invoice['total'],
+            "amount_paise": amount_in_paise,
             "currency": order['currency'], 
             "key_id": os.environ.get("RAZORPAY_KEY_ID"),
-            "invoice_number": invoice.get('invoice_number')
+            "invoice_number": invoice.get('invoice_number'),
+            "commission_amount": commission_amount / 100,
+            "freelancer_amount": freelancer_amount / 100,
+            "payment_routing_enabled": len(account_transfers) > 0
         }
 
 @app.post("/api/public/payments/verify")

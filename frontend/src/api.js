@@ -11,7 +11,7 @@ export const apiFetch = async (endpoint, options = {}) => {
     ...options.headers,
   }
 
-  const response = await fetch(`http://100.57.224.161:8000${endpoint}`, {
+  const response = await fetch(`http://127.0.0.1:8000${endpoint}`, {
     ...options,
     headers,
   })
