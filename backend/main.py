@@ -2140,32 +2140,53 @@ async def update_payment_account_details(request: dict, auth_data: dict = Depend
     
     update_data = {}
     
-    # Support both old field names and new standardized fields
-    if request.get("bank_account_number"):
-        update_data["bank_account_number"] = request["bank_account_number"]
-    if request.get("ifsc_code"):
-        update_data["ifsc_code"] = request["ifsc_code"]
-    if request.get("upi_id"):
-        update_data["upi_id"] = request["upi_id"]
-    if request.get("account_holder_name"):
-        update_data["account_holder_name"] = request["account_holder_name"]
-    if request.get("pan_number"):
-        update_data["pan_number"] = request["pan_number"]
-    
-    # New standardized fields for RazorpayX Route
+    # Handle payout destination type
     if request.get("payout_destination_type"):
         update_data["payout_destination_type"] = request["payout_destination_type"]  # 'bank' or 'upi'
     
-    if request.get("payout_destination_value"):
-        # For bank: JSON string like {"account_number": "123", "ifsc": "SBIN0001", "name": "John"}
-        # For UPI: Just the UPI ID string
-        update_data["payout_destination_value"] = request["payout_destination_value"]
+    # Handle payout destination value based on type
+    payout_type = request.get("payout_destination_type", "bank")
+    
+    if payout_type == "bank":
+        account_number = request.get("bank_account_number")
+        ifsc_code = request.get("ifsc_code")
+        account_holder_name = request.get("account_holder_name")
+        
+        if account_number and ifsc_code:
+            # Store as JSON string for bank details
+            bank_details = {
+                "account_number": account_number,
+                "ifsc": ifsc_code,
+                "name": account_holder_name or ""
+            }
+            update_data["payout_destination_value"] = json.dumps(bank_details)
+            
+            # Also store individual fields for backward compatibility if they exist
+            # Check if columns exist first by attempting to add them conditionally
+            # For now, we'll just use payout_destination_value which is guaranteed to exist
+    
+    elif payout_type == "upi":
+        upi_id = request.get("upi_id")
+        if upi_id:
+            # Store UPI ID directly as string
+            update_data["payout_destination_value"] = upi_id
+    
+    # Store account holder name and PAN separately if those columns exist
+    # We'll try to update them, and if the columns don't exist, we'll just skip
+    if request.get("account_holder_name"):
+        # Try to store in a separate field if it exists, otherwise include in JSON
+        pass  # Already included in bank JSON above
+    
+    if request.get("pan_number"):
+        # We can add pan_number to the profile if the column exists
+        # For now, we'll skip this as it may not exist in all schemas
+        pass
     
     if not update_data:
         raise HTTPException(status_code=400, detail="No valid details provided")
     
     async with httpx.AsyncClient() as client:
-        await client.patch(
+        response = await client.patch(
             f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
             json=update_data,
             headers={
@@ -2176,8 +2197,12 @@ async def update_payment_account_details(request: dict, auth_data: dict = Depend
                 "Content-Profile": "freelancing_demo"
             }
         )
+        
+        if response.status_code >= 400:
+            error_detail = response.text
+            raise HTTPException(status_code=response.status_code, detail=f"Failed to update profile: {error_detail}")
     
-    return {"message": "Payment account details updated successfully"}
+    return {"message": "Payment account details updated successfully", "updated_fields": list(update_data.keys())}
 
 @app.post("/api/payment-account/toggle-integration")
 async def toggle_payment_integration(request: dict, auth_data: dict = Depends(get_current_user)):
