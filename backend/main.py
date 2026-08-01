@@ -77,7 +77,8 @@ async def require_pro_plan(auth_data: dict = Depends(get_current_user)):
         if not res.json():
             raise HTTPException(status_code=403, detail="Please upgrade to Pro.")
         
-        profile = res.json()[0]
+        data = res.json() if res.json() else []
+        profile = data[0] if data and len(data) > 0 else {}
         plan = profile.get('subscription_plan', 'free')
         status = profile.get('subscription_status', 'inactive')
         period_end = profile.get('current_period_end')
@@ -2081,7 +2082,8 @@ async def get_payment_account_status(auth_data: dict = Depends(get_current_user)
             headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
         )
         
-        profile = res.json()[0] if res.json() else {}
+        data = res.json() if res.json() else []
+        profile = data[0] if data and len(data) > 0 else {}
         
         return {
             "status": profile.get("razorpay_account_status", "not_connected"),
@@ -2219,7 +2221,8 @@ async def toggle_payment_integration(request: dict, auth_data: dict = Depends(ge
                 f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=razorpay_account_status,payout_destination_value,bank_account_number,upi_id",
                 headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
             )
-            profile = res.json()[0] if res.json() else {}
+            data = res.json() if res.json() else []
+        profile = data[0] if data and len(data) > 0 else {}
             
             if profile.get("razorpay_account_status") not in ["verified", "active"]:
                 # Allow enabling if payout details are provided (for manual verification)
@@ -2685,7 +2688,8 @@ async def cancel_subscription(auth_data: dict = Depends(get_current_user)):
             f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=razorpay_subscription_id,current_period_end", 
             headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
         )
-        profile = res.json()[0] if res.json() else {}
+        data = res.json() if res.json() else []
+        profile = data[0] if data and len(data) > 0 else {}
         sub_id = profile.get("razorpay_subscription_id")
         
         if not sub_id:
