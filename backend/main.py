@@ -1639,34 +1639,107 @@ async def verify_payment(request: dict):
         inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=user_id,total,currency", headers=headers)
         inv_data = inv_res.json()[0]
         
-        await client.patch(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}", json={"status": "Paid"}, headers=headers)
+        # Get freelancer profile for commission calculation
+        profile_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{inv_data['user_id']}&select=commission_percentage,payment_integration_enabled,razorpay_account_id",
+            headers=headers
+        )
+        profile = profile_res.json()[0] if profile_res.json() else {}
         
+        commission_pct = profile.get("commission_percentage", 2.00)
+        payment_enabled = profile.get("payment_integration_enabled", False)
+        total_amount = float(inv_data['total'])
+        
+        # Calculate commission and payout
+        commission_amount = round((total_amount * commission_pct / 100), 2)
+        freelancer_payout = round((total_amount - commission_amount), 2)
+        
+        # Update invoice status
+        await client.patch(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}", json={
+            "status": "Paid",
+            "razorpay_payment_id": razorpay_payment_id,
+            "platform_commission_amount": commission_amount,
+            "freelancer_payout_amount": freelancer_payout
+        }, headers=headers)
+        
+        # Record payment
         await client.post(f"{SUPABASE_URL}/rest/v1/payments", json={
             "invoice_id": invoice_id,
             "user_id": inv_data['user_id'],
             "razorpay_order_id": razorpay_order_id,
             "razorpay_payment_id": razorpay_payment_id,
             "razorpay_signature": razorpay_signature,
-            "amount": inv_data['total'],
+            "amount": total_amount,
             "currency": inv_data['currency'],
             "status": "paid"
         }, headers=headers)
         
-    return {"message": "Payment verified and invoice marked as Paid"}
+        # Create payment_splits record
+        await client.post(
+            f"{SUPABASE_URL}/rest/v1/payment_splits",
+            json={
+                "invoice_id": invoice_id,
+                "total_amount": total_amount,
+                "commission_percentage": commission_pct,
+                "commission_amount": commission_amount,
+                "freelancer_amount": freelancer_payout,
+                "split_status": "completed" if payment_enabled else "pending_manual",
+                "razorpay_split_id": razorpay_payment_id
+            },
+            headers=headers
+        )
+        
+        # Create payout record
+        if payment_enabled and profile.get("razorpay_account_id"):
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/payouts",
+                json={
+                    "freelancer_id": inv_data['user_id'],
+                    "invoice_id": invoice_id,
+                    "amount": freelancer_payout,
+                    "commission_amount": commission_amount,
+                    "net_payout": freelancer_payout,
+                    "status": "completed",
+                    "payout_reference": razorpay_payment_id
+                },
+                headers=headers
+            )
+        else:
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/payouts",
+                json={
+                    "freelancer_id": inv_data['user_id'],
+                    "invoice_id": invoice_id,
+                    "amount": freelancer_payout,
+                    "commission_amount": commission_amount,
+                    "net_payout": freelancer_payout,
+                    "status": "pending_manual",
+                    "payout_reference": None
+                },
+                headers=headers
+            )
+        
+    return {
+        "message": "Payment verified and invoice marked as Paid",
+        "commission_amount": commission_amount,
+        "freelancer_payout": freelancer_payout,
+        "commission_percentage": commission_pct
+    }
 
 @app.post("/api/webhooks/razorpay")
 async def razorpay_webhook(request: Request):
-    # 1. Verify Webhook Signature (Crucial for security)
     webhook_signature = request.headers.get("x-razorpay-signature")
     body = await request.body()
     
+    # Verify signature
     expected_signature = hmac.new(
-        os.environ.get("RAZORPAY_WEBHOOK_SECRET").encode(), # Add this to your .env!
+        os.environ.get("RAZORPAY_WEBHOOK_SECRET").encode(),
         body,
         hashlib.sha256
     ).hexdigest()
     
     if expected_signature != webhook_signature:
+        print("❌ Webhook signature mismatch!")
         raise HTTPException(status_code=400, detail="Invalid webhook signature")
     
     payload = json.loads(body)
@@ -1676,6 +1749,7 @@ async def razorpay_webhook(request: Request):
         payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
         order_id = payment.get("order_id")
         razorpay_payment_id = payment.get("id")
+        amount_paid = payment.get("amount") / 100.0  # Convert from paise
         
         # Find the invoice by receipt (which we set to invoice_id)
         receipt_invoice_id = payment.get("receipt")
@@ -1683,11 +1757,105 @@ async def razorpay_webhook(request: Request):
         async with httpx.AsyncClient() as client:
             headers = {"apikey": SUPABSE_SERVICE_KEY, "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"}
             
-            # Update Invoice to Paid
-            await client.patch(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{receipt_invoice_id}", json={"status": "Paid"}, headers=headers)
+            # Get invoice details including commission info
+            inv_res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{receipt_invoice_id}&select=*,clients(name,email)",
+                headers=headers
+            )
+            invoice = inv_res.json()[0] if inv_res.json() else None
             
-            # TODO: Trigger Gmail API here to send "Payment Received" email with PDF attached!
-            print(f"✅ Webhook: Invoice {receipt_invoice_id} marked as PAID via Razorpay")
+            if not invoice:
+                return {"status": "ignored", "reason": "Invoice not found"}
+            
+            # Get freelancer profile for commission calculation
+            profile_res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}&select=commission_percentage,payment_integration_enabled,razorpay_account_id,payout_destination_type,payout_destination_value",
+                headers=headers
+            )
+            profile = profile_res.json()[0] if profile_res.json() else {}
+            
+            commission_pct = profile.get("commission_percentage", 2.00)
+            payment_enabled = profile.get("payment_integration_enabled", False)
+            
+            # Calculate commission and payout amounts
+            commission_amount = round((amount_paid * commission_pct / 100), 2)
+            freelancer_payout = round((amount_paid - commission_amount), 2)
+            
+            # Update Invoice to Paid
+            await client.patch(
+                f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{receipt_invoice_id}", 
+                json={
+                    "status": "Paid",
+                    "razorpay_payment_id": razorpay_payment_id,
+                    "platform_commission_amount": commission_amount,
+                    "freelancer_payout_amount": freelancer_payout
+                }, 
+                headers=headers
+            )
+            
+            # Create payment_splits record
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/payment_splits",
+                json={
+                    "invoice_id": receipt_invoice_id,
+                    "total_amount": amount_paid,
+                    "commission_percentage": commission_pct,
+                    "commission_amount": commission_amount,
+                    "freelancer_amount": freelancer_payout,
+                    "split_status": "completed" if payment_enabled else "pending_manual",
+                    "razorpay_split_id": razorpay_payment_id
+                },
+                headers=headers
+            )
+            
+            # Create payout record if payment routing is enabled
+            if payment_enabled and profile.get("razorpay_account_id"):
+                # Razorpay Route automatically transfers the amount
+                # Record the payout in our database
+                await client.post(
+                    f"{SUPABASE_URL}/rest/v1/payouts",
+                    json={
+                        "freelancer_id": invoice["user_id"],
+                        "invoice_id": receipt_invoice_id,
+                        "amount": freelancer_payout,
+                        "commission_amount": commission_amount,
+                        "net_payout": freelancer_payout,
+                        "status": "completed",
+                        "payout_reference": razorpay_payment_id
+                    },
+                    headers=headers
+                )
+                print(f"✅ Webhook: Automatic payout of ₹{freelancer_payout} to freelancer for invoice {receipt_invoice_id}")
+            else:
+                # Manual payout required - record pending payout
+                await client.post(
+                    f"{SUPABASE_URL}/rest/v1/payouts",
+                    json={
+                        "freelancer_id": invoice["user_id"],
+                        "invoice_id": receipt_invoice_id,
+                        "amount": freelancer_payout,
+                        "commission_amount": commission_amount,
+                        "net_payout": freelancer_payout,
+                        "status": "pending_manual",
+                        "payout_reference": None
+                    },
+                    headers=headers
+                )
+                print(f"⏳ Webhook: Manual payout of ₹{freelancer_payout} pending for invoice {receipt_invoice_id}")
+            
+            # Trigger Auto-Email to client
+            try:
+                # Fetch profile for PDF generation
+                prof_for_pdf = await client.get(
+                    f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}&select=organization_name,gstin,logo_url",
+                    headers=headers
+                )
+                invoice['profile'] = prof_for_pdf.json()[0] if prof_for_pdf.json() else {}
+                await send_payment_success_email(invoice, client, headers)
+            except Exception as e:
+                print(f"⚠️ Failed to send payment success email: {e}")
+            
+            print(f"✅ Webhook: Invoice {receipt_invoice_id} marked as PAID via Razorpay | Commission: ₹{commission_amount} | Payout: ₹{freelancer_payout}")
             
     return {"status": "success"}
 
@@ -1895,6 +2063,415 @@ async def razorpay_webhook(request: Request):
                 await send_payment_success_email(invoice, client, headers)
                 
     return {"status": "success"}
+
+
+# ==============================================================================
+# PAYMENT ROUTING ENDPOINTS (RazorpayX Route)
+# ==============================================================================
+
+@app.get("/api/payment-account/status")
+async def get_payment_account_status(auth_data: dict = Depends(get_current_user)):
+    """Get freelancer's payment account connection status"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=commission_percentage,razorpay_account_id,razorpay_account_status,payment_integration_enabled,payout_destination_type,payout_destination_value,razorpay_onboard_url",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
+        )
+        
+        profile = res.json()[0] if res.json() else {}
+        
+        return {
+            "status": profile.get("razorpay_account_status", "not_connected"),
+            "account_id": profile.get("razorpay_account_id"),
+            "enabled": profile.get("payment_integration_enabled", False),
+            "commission_percentage": profile.get("commission_percentage", 2.00),
+            "payout_destination_type": profile.get("payout_destination_type", "bank"),
+            "payout_details_provided": bool(profile.get("payout_destination_value")),
+            "onboard_url": profile.get("razorpay_onboard_url")
+        }
+
+@app.post("/api/payment-account/connect")
+async def initiate_payment_account_connection(auth_data: dict = Depends(get_current_user)):
+    """Initiate Razorpay Standard Onboarding for freelancer"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    # In production, you would call Razorpay API to create an onboard account
+    # For now, we'll generate a mock onboarding URL
+    # Replace this with actual Razorpay API call once Route is enabled
+    
+    onboard_data = {
+        "account_type": "current_account",
+        "email": user.email,
+        "callback_url": f"http://localhost:8000/api/payment-account/onboard-callback",
+        "notes": {"user_id": user.id}
+    }
+    
+    # TODO: Replace with actual Razorpay API call when Route is enabled
+    # response = razorpay_client.account.create(onboard_data)
+    # onboard_url = response.get("onboarding_url")
+    
+    # Mock implementation for now
+    onboard_url = "https://onboarding.razorpay.com/mock"  # Replace with actual API call
+    
+    async with httpx.AsyncClient() as client:
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
+            json={"razorpay_onboard_url": onboard_url, "razorpay_account_status": "pending"},
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept-Profile": "freelancing_demo",
+                "Content-Profile": "freelancing_demo"
+            }
+        )
+    
+    return {"onboard_url": onboard_url, "message": "Please complete onboarding to enable payment routing"}
+
+@app.post("/api/payment-account/update-details")
+async def update_payment_account_details(request: dict, auth_data: dict = Depends(get_current_user)):
+    """Update freelancer's bank/UPI details for payout destination"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    update_data = {}
+    
+    # Support both old field names and new standardized fields
+    if request.get("bank_account_number"):
+        update_data["bank_account_number"] = request["bank_account_number"]
+    if request.get("ifsc_code"):
+        update_data["ifsc_code"] = request["ifsc_code"]
+    if request.get("upi_id"):
+        update_data["upi_id"] = request["upi_id"]
+    if request.get("account_holder_name"):
+        update_data["account_holder_name"] = request["account_holder_name"]
+    if request.get("pan_number"):
+        update_data["pan_number"] = request["pan_number"]
+    
+    # New standardized fields for RazorpayX Route
+    if request.get("payout_destination_type"):
+        update_data["payout_destination_type"] = request["payout_destination_type"]  # 'bank' or 'upi'
+    
+    if request.get("payout_destination_value"):
+        # For bank: JSON string like {"account_number": "123", "ifsc": "SBIN0001", "name": "John"}
+        # For UPI: Just the UPI ID string
+        update_data["payout_destination_value"] = request["payout_destination_value"]
+    
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No valid details provided")
+    
+    async with httpx.AsyncClient() as client:
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
+            json=update_data,
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept-Profile": "freelancing_demo",
+                "Content-Profile": "freelancing_demo"
+            }
+        )
+    
+    return {"message": "Payment account details updated successfully"}
+
+@app.post("/api/payment-account/toggle-integration")
+async def toggle_payment_integration(request: dict, auth_data: dict = Depends(get_current_user)):
+    """Enable/disable payment integration for invoices"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    enable = request.get("enable", False)
+    
+    # Check if account is connected before enabling
+    if enable:
+        async with httpx.AsyncClient() as client:
+            res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=razorpay_account_status,payout_destination_value,bank_account_number,upi_id",
+                headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
+            )
+            profile = res.json()[0] if res.json() else {}
+            
+            if profile.get("razorpay_account_status") not in ["verified", "active"]:
+                # Allow enabling if payout details are provided (for manual verification)
+                has_payout_details = (
+                    profile.get("payout_destination_value") or 
+                    profile.get("bank_account_number") or 
+                    profile.get("upi_id")
+                )
+                if not has_payout_details:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Please connect your bank account or UPI ID first to enable payment integration"
+                    )
+    
+    async with httpx.AsyncClient() as client:
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
+            json={"payment_integration_enabled": enable},
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept-Profile": "freelancing_demo",
+                "Content-Profile": "freelancing_demo"
+            }
+        )
+    
+    return {"message": f"Payment integration {'enabled' if enable else 'disabled'} successfully"}
+
+@app.post("/api/payment-account/update-commission")
+async def update_commission_percentage(request: dict, auth_data: dict = Depends(get_current_user)):
+    """Update commission percentage (admin only feature)"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    commission_pct = request.get("commission_percentage")
+    
+    if commission_pct is None or commission_pct < 0 or commission_pct > 100:
+        raise HTTPException(status_code=400, detail="Invalid commission percentage")
+    
+    async with httpx.AsyncClient() as client:
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
+            json={"commission_percentage": commission_pct},
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept-Profile": "freelancing_demo",
+                "Content-Profile": "freelancing_demo"
+            }
+        )
+    
+    return {"message": f"Commission percentage updated to {commission_pct}%"}
+
+@app.post("/api/invoices/{invoice_id}/create-payment-order")
+async def create_payment_order_with_routing(invoice_id: str, request: dict, auth_data: dict = Depends(get_current_user)):
+    """Create Razorpay order with payment routing support"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {token}",
+            "Accept-Profile": "freelancing_demo"
+        }
+        
+        # Get invoice details
+        inv_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=*,clients(name,email)",
+            headers=headers
+        )
+        
+        if not inv_res.json():
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        
+        invoice = inv_res.json()[0]
+        
+        # Get freelancer's profile for commission calculation
+        profile_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=commission_percentage,enable_payment_integration,razorpay_account_id",
+            headers=headers
+        )
+        
+        profile = profile_res.json()[0] if profile_res.json() else {}
+        commission_pct = profile.get("commission_percentage", 2.00)
+        payment_enabled = profile.get("enable_payment_integration", False)
+        
+        # Calculate amounts
+        total_amount = float(invoice.get("total", 0))
+        amount_in_paise = int(total_amount * 100)
+        
+        # Calculate commission and payout
+        commission_amount = round((total_amount * commission_pct / 100), 2)
+        payout_amount = round((total_amount - commission_amount), 2)
+        
+        # Prepare order data
+        order_data = {
+            "amount": amount_in_paise,
+            "currency": invoice.get("currency", "INR"),
+            "receipt": invoice_id,
+            "payment_capture": 1,
+            "notes": {
+                "invoice_number": invoice.get("invoice_number"),
+                "user_id": user.id,
+                "commission_percentage": commission_pct,
+                "payout_amount": payout_amount
+            }
+        }
+        
+        # Add account transfers if payment routing is enabled
+        if payment_enabled and profile.get("razorpay_account_id"):
+            # Razorpay Route: Transfer to freelancer's connected account
+            order_data["account_transfers"] = [
+                {
+                    "account": profile["razorpay_account_id"],
+                    "amount": int(payout_amount * 100),  # Convert to paise
+                    "currency": invoice.get("currency", "INR"),
+                    "on_hold": 0,
+                    "on_hold_until": None
+                }
+            ]
+        
+        # Create Razorpay order
+        order = razorpay_client.order.create(data=order_data)
+        
+        # Save order ID and payment details to invoice
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}",
+            json={
+                "razorpay_order_id": order["id"],
+                "payment_integration_enabled": payment_enabled,
+                "platform_commission_amount": commission_amount,
+                "freelancer_payout_amount": payout_amount
+            },
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept-Profile": "freelancing_demo",
+                "Content-Profile": "freelancing_demo"
+            }
+        )
+        
+        return {
+            "order_id": order["id"],
+            "amount": amount_in_paise,
+            "currency": order["currency"],
+            "key_id": os.environ.get("RAZORPAY_KEY_ID"),
+            "invoice_number": invoice.get("invoice_number"),
+            "payment_routing_enabled": payment_enabled,
+            "commission_amount": commission_amount,
+            "payout_amount": payout_amount,
+            "commission_percentage": commission_pct
+        }
+
+@app.get("/api/payouts")
+async def get_payouts(auth_data: dict = Depends(get_current_user)):
+    """Get all payouts for the freelancer"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/payouts?freelancer_id=eq.{user.id}&order=created_at.desc",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Accept-Profile": "freelancing_demo"
+            }
+        )
+        
+        return {"payouts": res.json()}
+
+@app.get("/api/payment-splits")
+async def get_payment_splits(auth_data: dict = Depends(get_current_user)):
+    """Get all payment splits for the freelancer's invoices"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        # Get all invoices for this user first
+        inv_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&select=id",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Accept-Profile": "freelancing_demo"
+            }
+        )
+        invoice_ids = [inv['id'] for inv in inv_res.json()] if inv_res.json() else []
+        
+        if not invoice_ids:
+            return {"payment_splits": []}
+        
+        # Get payment splits for these invoices
+        split_ids = ",".join([f"{iid}" for iid in invoice_ids])
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/payment_splits?invoice_id=in.({split_ids})&order=created_at.desc",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Accept-Profile": "freelancing_demo"
+            }
+        )
+        
+        return {"payment_splits": res.json()}
+
+@app.get("/api/commissions")
+async def get_commission_transactions(auth_data: dict = Depends(get_current_user)):
+    """Get all commission transactions for the platform (admin only)"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    # Check if user is admin (you may want to add an admin flag to profiles)
+    async with httpx.AsyncClient() as client:
+        profile_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=is_admin",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Accept-Profile": "freelancing_demo"
+            }
+        )
+        profile = profile_res.json()[0] if profile_res.json() else {}
+        
+        if not profile.get("is_admin", False):
+            # Return only their own commission data
+            res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/payment_splits?select=*&order=created_at.desc",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {token}",
+                    "Accept-Profile": "freelancing_demo"
+                }
+            )
+            return {"commissions": res.json()}
+        
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/payment_splits?order=created_at.desc",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Accept-Profile": "freelancing_demo"
+            }
+        )
+        
+        return {"commissions": res.json()}
+
+@app.get("/api/commissions/summary")
+async def get_commission_summary(auth_data: dict = Depends(get_current_user)):
+    """Get commission summary statistics"""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        # Get total commissions from payment_splits
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/payment_splits?select=commission_amount,split_status",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {token}",
+                "Accept-Profile": "freelancing_demo"
+            }
+        )
+        
+        splits = res.json()
+        
+        total_commission = sum(s.get("commission_amount", 0) for s in splits if s.get("split_status") == "completed")
+        pending_commission = sum(s.get("commission_amount", 0) for s in splits if s.get("split_status") in ["pending", "pending_manual"])
+        
+        return {
+            "total_earned": total_commission,
+            "pending": pending_commission,
+            "transaction_count": len(splits)
+        }
 
 
 @app.get("/api/reports/summary")
