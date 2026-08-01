@@ -2203,7 +2203,7 @@ async def update_payment_account_details(request: dict, auth_data: dict = Depend
     
     async with httpx.AsyncClient() as client:
         response = await client.patch(
-            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
+            f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
             json=update_data,
             headers={
                 "apikey": SUPABASE_KEY,
