@@ -95,34 +95,40 @@ export default function PaymentSettings() {
     setSaving(true)
     
     try {
-      const payload = {
-        payout_destination_type: payoutType,
-        account_holder_name: accountHolderName,
-        pan_number: panNumber
-      }
+      let destinationValue = ''
       
       if (payoutType === 'bank') {
-        if (!accountNumber || !ifscCode) {
-          alert('Please provide account number and IFSC code')
+        if (!accountNumber || !ifscCode || !accountHolderName) {
+          alert('Please provide account holder name, account number and IFSC code')
           setSaving(false)
           return
         }
-        payload.bank_account_number = accountNumber
-        payload.ifsc_code = ifscCode
-        // Don't send payout_destination_value manually - backend will create it from bank details
+        const bankDetails = {
+          account_holder_name: accountHolderName,
+          account_number: accountNumber,
+          ifsc_code: ifscCode,
+          pan_number: panNumber
+        }
+        destinationValue = JSON.stringify(bankDetails)
       } else if (payoutType === 'upi') {
-        if (!upiId) {
-          alert('Please provide UPI ID')
+        if (!upiId || !accountHolderName) {
+          alert('Please provide account holder name and UPI ID')
           setSaving(false)
           return
         }
-        payload.upi_id = upiId
-        // Don't send payout_destination_value manually - backend will use upi_id
+        destinationValue = upiId
       }
-      
+
+      const payload = {
+        payout_destination_type: payoutType,
+        payout_destination_value: destinationValue,
+        payment_integration_enabled: accountStatus.enabled,
+        commission_percentage: accountStatus.commission_percentage
+      }
+
       console.log('Sending payload:', payload)
       
-      const response = await apiFetch('/api/payment-account/update-details', {
+      const response = await apiFetch('/api/payment-account', {
         method: 'POST',
         body: JSON.stringify(payload)
       })
@@ -137,7 +143,7 @@ export default function PaymentSettings() {
       let errorMessage = 'Failed to save payment details'
       try {
         const errData = await error.response?.json()
-        errorMessage = errData?.detail || errorMessage
+        errorMessage = errData?.detail || errData?.message || errorMessage
       } catch (e) {
         // Ignore parsing error
       }
