@@ -2210,7 +2210,8 @@ async def update_payment_account_details(request: dict, auth_data: dict = Depend
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
                 "Accept-Profile": "freelancing_demo",
-                "Content-Profile": "freelancing_demo"
+                "Content-Profile": "freelancing_demo",
+                "Prefer": "return=representation"
             }
         )
         
@@ -2218,7 +2219,7 @@ async def update_payment_account_details(request: dict, auth_data: dict = Depend
             error_detail = response.text
             raise HTTPException(status_code=response.status_code, detail=f"Failed to update profile: {error_detail}")
     
-    return {"message": "Payment account details updated successfully", "updated_fields": list(update_data.keys())}
+    return {"message": "Payment account details updated successfully", "updated_fields": list(update_data.keys()), "data": response.json()}
 
 @app.post("/api/payment-account/toggle-integration")
 async def toggle_payment_integration(request: dict, auth_data: dict = Depends(get_current_user)):
