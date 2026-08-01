@@ -41,9 +41,20 @@ jobs:
     - name: Make .env for build
       working-directory: ./frontend
       run: |
-        echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}" > .env
-        echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}" >> .env
-        echo "VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}" >> .env    
+        echo "TEST_RAZORPAY_PLAN_ID=${{ secrets.TEST_RAZORPAY_PLAN_ID }}" >> .env
+        echo "SUPABSE_SERVICE_KEY=${{ secrets.SUPABSE_SERVICE_KEY }}" >> .env
+        echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
+        echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
+        echo "RAZORPAY_WEBHOOK_SECRET=${{ secrets.RAZORPAY_WEBHOOK_SECRET }}" >> .env
+        echo "RAZORPAY_PLAN_ID=${{ secrets.RAZORPAY_PLAN_ID }}" >> .env
+        echo "RAZORPAY_KEY_SECRET=${{ secrets.RAZORPAY_KEY_SECRET }}" >> .env
+        echo "RAZORPAY_KEY_ID=${{ secrets.RAZORPAY_KEY_ID }}" >> .env
+        echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
+        echo "GOOGLE_REDIRECT_URI=${{ secrets.GOOGLE_REDIRECT_URI }}" >> .env
+        echo "GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}" >> .env
+        echo "GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}" >> .env
+        echo "ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}" >> .env
+    
 
 
     - name: Build, Tag, and Push Backend Image
