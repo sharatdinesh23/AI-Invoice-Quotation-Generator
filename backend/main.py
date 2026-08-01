@@ -2076,14 +2076,21 @@ async def get_payment_account_status(auth_data: dict = Depends(get_current_user)
     user = auth_data["user"]
     token = auth_data["token"]
     
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
     async with httpx.AsyncClient() as client:
-        # Only select columns that exist in the database
+        # Try querying by user_id first, then id if not found
         res = await client.get(
-            f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}&select=commission_percentage,razorpay_account_id,payment_integration_enabled,payout_destination_type,payout_destination_value",
-            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=commission_percentage,razorpay_account_id,payment_integration_enabled,payout_destination_type,payout_destination_value",
+            headers=headers
         )
+        data = res.json() if res.json() and isinstance(res.json(), list) else []
+        if not data:
+            res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}&select=commission_percentage,razorpay_account_id,payment_integration_enabled,payout_destination_type,payout_destination_value",
+                headers=headers
+            )
+            data = res.json() if res.json() and isinstance(res.json(), list) else []
         
-        data = res.json() if res.json() else []
         profile = data[0] if data and len(data) > 0 else {}
         
         # Derive status from existing fields
@@ -2106,7 +2113,8 @@ async def get_payment_account_status(auth_data: dict = Depends(get_current_user)
             "enabled": is_enabled,
             "commission_percentage": profile.get("commission_percentage", 2.00),
             "payout_destination_type": profile.get("payout_destination_type", "bank"),
-            "payout_details_provided": has_payout_details
+            "payout_details_provided": has_payout_details,
+            "payout_destination_value": profile.get("payout_destination_value")
         }
 
 @app.post("/api/payment-account/connect")
@@ -2115,36 +2123,28 @@ async def initiate_payment_account_connection(auth_data: dict = Depends(get_curr
     user = auth_data["user"]
     token = auth_data["token"]
     
-    # In production, you would call Razorpay API to create an onboard account
-    # For now, we'll generate a mock onboarding URL
-    # Replace this with actual Razorpay API call once Route is enabled
+    onboard_url = "https://onboarding.razorpay.com/mock"
     
-    onboard_data = {
-        "account_type": "current_account",
-        "email": user.email,
-        "callback_url": f"http://localhost:8000/api/payment-account/onboard-callback",
-        "notes": {"user_id": user.id}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept-Profile": "freelancing_demo",
+        "Content-Profile": "freelancing_demo"
     }
     
-    # TODO: Replace with actual Razorpay API call when Route is enabled
-    # response = razorpay_client.account.create(onboard_data)
-    # onboard_url = response.get("onboarding_url")
-    
-    # Mock implementation for now
-    onboard_url = "https://onboarding.razorpay.com/mock"  # Replace with actual API call
-    
     async with httpx.AsyncClient() as client:
-        await client.patch(
-            f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
+        res = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
             json={"payment_integration_enabled": True},
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept-Profile": "freelancing_demo",
-                "Content-Profile": "freelancing_demo"
-            }
+            headers=headers
         )
+        if res.status_code >= 400:
+            await client.patch(
+                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
+                json={"payment_integration_enabled": True},
+                headers=headers
+            )
     
     return {"onboard_url": onboard_url, "message": "Payment integration enabled. Please add your bank/UPI details"}
 
@@ -2157,69 +2157,78 @@ async def update_payment_account_details(request: dict, auth_data: dict = Depend
     update_data = {}
     
     # Handle payout destination type
-    if request.get("payout_destination_type"):
-        update_data["payout_destination_type"] = request["payout_destination_type"]  # 'bank' or 'upi'
-    
-    # Handle payout destination value based on type
     payout_type = request.get("payout_destination_type", "bank")
+    update_data["payout_destination_type"] = payout_type
     
-    if payout_type == "bank":
+    # Check direct payout_destination_value first
+    dest_val = request.get("payout_destination_value")
+    
+    if dest_val:
+        update_data["payout_destination_value"] = str(dest_val) if not isinstance(dest_val, str) else dest_val
+    elif payout_type == "bank":
         account_number = request.get("bank_account_number")
         ifsc_code = request.get("ifsc_code")
         account_holder_name = request.get("account_holder_name")
+        pan_number = request.get("pan_number")
         
         if account_number and ifsc_code:
-            # Store as JSON string for bank details
             bank_details = {
+                "account_holder_name": account_holder_name or "",
                 "account_number": account_number,
-                "ifsc": ifsc_code,
-                "name": account_holder_name or ""
+                "ifsc_code": ifsc_code,
+                "pan_number": pan_number or ""
             }
             update_data["payout_destination_value"] = json.dumps(bank_details)
-            
-            # Also store individual fields for backward compatibility if they exist
-            # Check if columns exist first by attempting to add them conditionally
-            # For now, we'll just use payout_destination_value which is guaranteed to exist
-    
     elif payout_type == "upi":
         upi_id = request.get("upi_id")
+        account_holder_name = request.get("account_holder_name")
+        pan_number = request.get("pan_number")
         if upi_id:
-            # Store UPI ID directly as string
-            update_data["payout_destination_value"] = upi_id
+            upi_details = {
+                "upi_id": upi_id,
+                "account_holder_name": account_holder_name or "",
+                "pan_number": pan_number or ""
+            }
+            update_data["payout_destination_value"] = json.dumps(upi_details)
+
+    # Enable payment integration when payout details are set
+    if "payment_integration_enabled" in request:
+        update_data["payment_integration_enabled"] = request["payment_integration_enabled"]
+    elif update_data.get("payout_destination_value"):
+        update_data["payment_integration_enabled"] = True
     
-    # Store account holder name and PAN separately if those columns exist
-    # We'll try to update them, and if the columns don't exist, we'll just skip
-    if request.get("account_holder_name"):
-        # Try to store in a separate field if it exists, otherwise include in JSON
-        pass  # Already included in bank JSON above
+    if "payout_destination_value" not in update_data:
+        raise HTTPException(status_code=400, detail="No valid bank or UPI details provided")
     
-    if request.get("pan_number"):
-        # We can add pan_number to the profile if the column exists
-        # For now, we'll skip this as it may not exist in all schemas
-        pass
-    
-    if not update_data:
-        raise HTTPException(status_code=400, detail="No valid details provided")
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept-Profile": "freelancing_demo",
+        "Content-Profile": "freelancing_demo",
+        "Prefer": "return=representation"
+    }
     
     async with httpx.AsyncClient() as client:
         response = await client.patch(
-            f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
             json=update_data,
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept-Profile": "freelancing_demo",
-                "Content-Profile": "freelancing_demo",
-                "Prefer": "return=representation"
-            }
+            headers=headers
         )
+        res_data = response.json() if response.content else []
+        if response.status_code >= 400 or (isinstance(res_data, list) and len(res_data) == 0):
+            response = await client.patch(
+                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
+                json=update_data,
+                headers=headers
+            )
         
         if response.status_code >= 400:
             error_detail = response.text
             raise HTTPException(status_code=response.status_code, detail=f"Failed to update profile: {error_detail}")
     
-    return {"message": "Payment account details updated successfully", "updated_fields": list(update_data.keys()), "data": response.json()}
+    response_json = response.json() if response.content else {}
+    return {"message": "Payment account details updated successfully", "updated_fields": list(update_data.keys()), "data": response_json}
 
 @app.post("/api/payment-account/toggle-integration")
 async def toggle_payment_integration(request: dict, auth_data: dict = Depends(get_current_user)):
@@ -2228,18 +2237,31 @@ async def toggle_payment_integration(request: dict, auth_data: dict = Depends(ge
     token = auth_data["token"]
     
     enable = request.get("enable", False)
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept-Profile": "freelancing_demo",
+        "Content-Profile": "freelancing_demo"
+    }
     
     # Check if account has payout details before enabling
     if enable:
         async with httpx.AsyncClient() as client:
             res = await client.get(
-                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}&select=payout_destination_value",
+                f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=payout_destination_value",
                 headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
             )
-            data = res.json() if res.json() else []
+            data = res.json() if res.json() and isinstance(res.json(), list) else []
+            if not data:
+                res = await client.get(
+                    f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}&select=payout_destination_value",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
+                )
+                data = res.json() if res.json() and isinstance(res.json(), list) else []
+                
         profile = data[0] if data and len(data) > 0 else {}
             
-        # Require payout details to enable
         has_payout_details = bool(profile.get("payout_destination_value"))
         if not has_payout_details:
             raise HTTPException(
@@ -2248,17 +2270,17 @@ async def toggle_payment_integration(request: dict, auth_data: dict = Depends(ge
             )
     
     async with httpx.AsyncClient() as client:
-        await client.patch(
-            f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
+        res = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
             json={"payment_integration_enabled": enable},
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept-Profile": "freelancing_demo",
-                "Content-Profile": "freelancing_demo"
-            }
+            headers=headers
         )
+        if res.status_code >= 400:
+            await client.patch(
+                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
+                json={"payment_integration_enabled": enable},
+                headers=headers
+            )
     
     return {"message": f"Payment integration {'enabled' if enable else 'disabled'} successfully"}
 

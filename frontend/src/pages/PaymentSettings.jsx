@@ -44,6 +44,44 @@ export default function PaymentSettings() {
       if (data.payout_destination_type) {
         setPayoutType(data.payout_destination_type)
       }
+
+      if (data.payout_destination_value) {
+        try {
+          const rawVal = data.payout_destination_value
+          let parsed = null
+          if (typeof rawVal === 'string' && rawVal.trim().startsWith('{')) {
+            parsed = JSON.parse(rawVal)
+          } else {
+            parsed = rawVal
+          }
+
+          if (parsed && typeof parsed === 'object') {
+            if (parsed.account_holder_name || parsed.name) {
+              setAccountHolderName(parsed.account_holder_name || parsed.name || '')
+            }
+            if (parsed.account_number || parsed.bank_account_number) {
+              setAccountNumber(parsed.account_number || parsed.bank_account_number || '')
+            }
+            if (parsed.ifsc_code || parsed.ifsc) {
+              setIfscCode(parsed.ifsc_code || parsed.ifsc || '')
+            }
+            if (parsed.upi_id) {
+              setUpiId(parsed.upi_id || '')
+            }
+            if (parsed.pan_number) {
+              setPanNumber(parsed.pan_number || '')
+            }
+          } else if (typeof parsed === 'string') {
+            if (data.payout_destination_type === 'upi') {
+              setUpiId(parsed)
+            }
+          }
+        } catch (e) {
+          if (data.payout_destination_type === 'upi' && typeof data.payout_destination_value === 'string') {
+            setUpiId(data.payout_destination_value)
+          }
+        }
+      }
     } catch (error) {
       console.error('Error fetching account status:', error)
     } finally {
@@ -116,14 +154,23 @@ export default function PaymentSettings() {
           setSaving(false)
           return
         }
-        destinationValue = upiId
+        const upiDetails = {
+          upi_id: upiId,
+          account_holder_name: accountHolderName,
+          pan_number: panNumber
+        }
+        destinationValue = JSON.stringify(upiDetails)
       }
 
       const payload = {
         payout_destination_type: payoutType,
         payout_destination_value: destinationValue,
-        payment_integration_enabled: accountStatus.enabled,
-        commission_percentage: accountStatus.commission_percentage
+        bank_account_number: accountNumber,
+        ifsc_code: ifscCode,
+        upi_id: upiId,
+        account_holder_name: accountHolderName,
+        pan_number: panNumber,
+        payment_integration_enabled: true
       }
 
       console.log('Sending payload:', payload)
