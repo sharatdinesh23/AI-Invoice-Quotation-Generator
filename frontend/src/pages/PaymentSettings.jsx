@@ -128,7 +128,7 @@ export default function PaymentSettings() {
 
       console.log('Sending payload:', payload)
       
-      const response = await apiFetch('/api/payment-account', {
+      const response = await apiFetch('/api/payment-account/update-details', {
         method: 'POST',
         body: JSON.stringify(payload)
       })
