@@ -2077,22 +2077,36 @@ async def get_payment_account_status(auth_data: dict = Depends(get_current_user)
     token = auth_data["token"]
     
     async with httpx.AsyncClient() as client:
+        # Only select columns that exist in the database
         res = await client.get(
-            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=commission_percentage,razorpay_account_id,razorpay_account_status,payment_integration_enabled,payout_destination_type,payout_destination_value,razorpay_onboard_url",
+            f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}&select=commission_percentage,razorpay_account_id,payment_integration_enabled,payout_destination_type,payout_destination_value",
             headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
         )
         
         data = res.json() if res.json() else []
         profile = data[0] if data and len(data) > 0 else {}
         
+        # Derive status from existing fields
+        is_enabled = profile.get("payment_integration_enabled", False)
+        has_account_id = bool(profile.get("razorpay_account_id"))
+        has_payout_details = bool(profile.get("payout_destination_value"))
+        
+        if not is_enabled:
+            status = "not_enabled"
+        elif not has_account_id and not has_payout_details:
+            status = "pending_setup"
+        elif has_account_id or has_payout_details:
+            status = "active"
+        else:
+            status = "inactive"
+        
         return {
-            "status": profile.get("razorpay_account_status", "not_connected"),
+            "status": status,
             "account_id": profile.get("razorpay_account_id"),
-            "enabled": profile.get("payment_integration_enabled", False),
+            "enabled": is_enabled,
             "commission_percentage": profile.get("commission_percentage", 2.00),
             "payout_destination_type": profile.get("payout_destination_type", "bank"),
-            "payout_details_provided": bool(profile.get("payout_destination_value")),
-            "onboard_url": profile.get("razorpay_onboard_url")
+            "payout_details_provided": has_payout_details
         }
 
 @app.post("/api/payment-account/connect")
@@ -2121,8 +2135,8 @@ async def initiate_payment_account_connection(auth_data: dict = Depends(get_curr
     
     async with httpx.AsyncClient() as client:
         await client.patch(
-            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
-            json={"razorpay_onboard_url": onboard_url, "razorpay_account_status": "pending"},
+            f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
+            json={"payment_integration_enabled": True},
             headers={
                 "apikey": SUPABASE_KEY,
                 "Authorization": f"Bearer {token}",
@@ -2132,7 +2146,7 @@ async def initiate_payment_account_connection(auth_data: dict = Depends(get_curr
             }
         )
     
-    return {"onboard_url": onboard_url, "message": "Please complete onboarding to enable payment routing"}
+    return {"onboard_url": onboard_url, "message": "Payment integration enabled. Please add your bank/UPI details"}
 
 @app.post("/api/payment-account/update-details")
 async def update_payment_account_details(request: dict, auth_data: dict = Depends(get_current_user)):
@@ -2214,32 +2228,27 @@ async def toggle_payment_integration(request: dict, auth_data: dict = Depends(ge
     
     enable = request.get("enable", False)
     
-    # Check if account is connected before enabling
+    # Check if account has payout details before enabling
     if enable:
         async with httpx.AsyncClient() as client:
             res = await client.get(
-                f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=razorpay_account_status,payout_destination_value,bank_account_number,upi_id",
+                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}&select=payout_destination_value",
                 headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"}
             )
             data = res.json() if res.json() else []
         profile = data[0] if data and len(data) > 0 else {}
             
-            if profile.get("razorpay_account_status") not in ["verified", "active"]:
-                # Allow enabling if payout details are provided (for manual verification)
-                has_payout_details = (
-                    profile.get("payout_destination_value") or 
-                    profile.get("bank_account_number") or 
-                    profile.get("upi_id")
-                )
-                if not has_payout_details:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail="Please connect your bank account or UPI ID first to enable payment integration"
-                    )
+        # Require payout details to enable
+        has_payout_details = bool(profile.get("payout_destination_value"))
+        if not has_payout_details:
+            raise HTTPException(
+                status_code=400, 
+                detail="Please add your bank account or UPI ID first to enable payment integration"
+            )
     
     async with httpx.AsyncClient() as client:
         await client.patch(
-            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
+            f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
             json={"payment_integration_enabled": enable},
             headers={
                 "apikey": SUPABASE_KEY,

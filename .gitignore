@@ -1,1 +1,47 @@
-Nothing needs to be added to .gitignore since only a source code file (`backend/main.py`) was modified and there are no build artifacts, dependencies, or temporary files in the changes.
+```python
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+
+# Dependencies
+.venv/
+venv/
+node_modules/
+*.egg-info/
+dist/
+build/
+*.so
+*.dylib
+*.dll
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Coverage reports
+.coverage
+htmlcov/
+coverage/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+```
