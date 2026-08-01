@@ -44,6 +44,14 @@ RUN npm ci
 # Copy source code (node_modules is ignored by .dockerignore)
 COPY . .
 
+# Accept build arguments for Supabase credentials
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_ANON_KEY
+
+# Set environment variables from build args (Vite needs these at build time)
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
+
 # Ensure vite has execute permissions (safety fix for Windows hosts)
 RUN chmod +x node_modules/.bin/vite
 
