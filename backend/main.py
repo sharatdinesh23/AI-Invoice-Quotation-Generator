@@ -405,7 +405,7 @@ class ExpenseUpdate(BaseModel):
 # PRODUCTS API
 # ==============================================================================
 @app.put("/api/products/{product_id}")
-async def update_product(
+async def update_product(product_id: str, request: dict, auth_data: dict = Depends(get_current_user)):
     user_id = auth_data['user'].id
     async with httpx.AsyncClient() as client:
         headers = {
@@ -419,6 +419,7 @@ async def update_product(
             headers=headers
         )
         return {"invoices": response.json() if response.json() else []}
+
 
 # 1. SPECIFIC ROUTE: MUST BE FIRST
 @app.get("/api/invoices/next-number")
