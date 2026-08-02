@@ -2,6 +2,7 @@
 -- Schema: freelancing_demo
 
 -- 1. Expense Categories Table
+-- Note: user_id can be NULL for global default categories visible to all users
 CREATE TABLE IF NOT EXISTS freelancing_demo.expense_categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -12,6 +13,9 @@ CREATE TABLE IF NOT EXISTS freelancing_demo.expense_categories (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Ensure user_id can be NULL for global default categories
+ALTER TABLE freelancing_demo.expense_categories ALTER COLUMN user_id DROP NOT NULL;
 
 -- 2. Expenses Table
 CREATE TABLE IF NOT EXISTS freelancing_demo.expenses (
@@ -93,52 +97,65 @@ ALTER TABLE freelancing_demo.expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE freelancing_demo.recurring_expenses ENABLE ROW LEVEL SECURITY;
 
 -- Policies for expense_categories (allow viewing global defaults where user_id IS NULL)
+-- Drop existing policies if they exist to avoid conflicts
+DROP POLICY IF EXISTS "Users can view their own and global expense categories" ON freelancing_demo.expense_categories;
 CREATE POLICY "Users can view their own and global expense categories"
 ON freelancing_demo.expense_categories FOR SELECT
 USING (auth.uid() = user_id OR user_id IS NULL);
 
+DROP POLICY IF EXISTS "Users can insert their own expense categories" ON freelancing_demo.expense_categories;
 CREATE POLICY "Users can insert their own expense categories"
 ON freelancing_demo.expense_categories FOR INSERT
 WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update their own expense categories" ON freelancing_demo.expense_categories;
 CREATE POLICY "Users can update their own expense categories"
 ON freelancing_demo.expense_categories FOR UPDATE
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete their own expense categories" ON freelancing_demo.expense_categories;
 CREATE POLICY "Users can delete their own expense categories"
 ON freelancing_demo.expense_categories FOR DELETE
 USING (auth.uid() = user_id);
 
 -- Policies for expenses
+DROP POLICY IF EXISTS "Users can view their own expenses" ON freelancing_demo.expenses;
 CREATE POLICY "Users can view their own expenses"
 ON freelancing_demo.expenses FOR SELECT
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert their own expenses" ON freelancing_demo.expenses;
 CREATE POLICY "Users can insert their own expenses"
 ON freelancing_demo.expenses FOR INSERT
 WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update their own expenses" ON freelancing_demo.expenses;
 CREATE POLICY "Users can update their own expenses"
 ON freelancing_demo.expenses FOR UPDATE
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete their own expenses" ON freelancing_demo.expenses;
 CREATE POLICY "Users can delete their own expenses"
 ON freelancing_demo.expenses FOR DELETE
 USING (auth.uid() = user_id);
 
 -- Policies for recurring_expenses
+DROP POLICY IF EXISTS "Users can view their own recurring expenses" ON freelancing_demo.recurring_expenses;
 CREATE POLICY "Users can view their own recurring expenses"
 ON freelancing_demo.recurring_expenses FOR SELECT
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert their own recurring expenses" ON freelancing_demo.recurring_expenses;
 CREATE POLICY "Users can insert their own recurring expenses"
 ON freelancing_demo.recurring_expenses FOR INSERT
 WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update their own recurring expenses" ON freelancing_demo.recurring_expenses;
 CREATE POLICY "Users can update their own recurring expenses"
 ON freelancing_demo.recurring_expenses FOR UPDATE
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete their own recurring expenses" ON freelancing_demo.recurring_expenses;
 CREATE POLICY "Users can delete their own recurring expenses"
 ON freelancing_demo.recurring_expenses FOR DELETE
 USING (auth.uid() = user_id);
