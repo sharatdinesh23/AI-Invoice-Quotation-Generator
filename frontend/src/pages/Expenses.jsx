@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../api';
+import * as api from '../api.js';
 
 const Expenses = () => {
   const navigate = useNavigate();
@@ -34,14 +34,19 @@ const Expenses = () => {
       if (filterStatus) params.status = filterStatus;
       if (dateRange.start) params.start_date = dateRange.start;
       if (dateRange.end) params.end_date = dateRange.end;
-      const res = await api.get('/api/expenses', { params });
-      setExpenses(res.data.expenses || []);
+      const res = await api.getExpenses(params);
+      const data = await res.json();
+      setExpenses(data.expenses || []);
     } catch (error) { console.error('Error:', error); }
     finally { setLoading(false); }
   };
 
   const fetchCategories = async () => {
-    try { const res = await api.get('/api/expenses/categories'); setCategories(res.data.categories || []); }
+    try { 
+      const res = await api.getExpenseCategories(); 
+      const data = await res.json();
+      setCategories(data.categories || []); 
+    }
     catch (error) { console.error('Error:', error); }
   };
 
@@ -50,8 +55,9 @@ const Expenses = () => {
       const params = {};
       if (dateRange.start) params.start_date = dateRange.start;
       if (dateRange.end) params.end_date = dateRange.end;
-      const res = await api.get('/api/expenses/summary', { params });
-      setSummary(res.data.summary);
+      const res = await api.getExpenseStats(params);
+      const data = await res.json();
+      setSummary(data.stats);
     } catch (error) { console.error('Error:', error); }
   };
 
@@ -67,22 +73,24 @@ const Expenses = () => {
         ...formData,
         amount: parseFloat(formData.amount),
         tax_amount: parseFloat(formData.tax_amount || 0),
-        tags: formData.tags.filter(t => t.trim() !== '')
+        tags: formData.tags?.filter(t => t.trim() !== '') || []
       };
+      let res;
       if (editingExpense) { 
-        await api.put('/api/expenses/' + editingExpense.id, payload); 
+        res = await api.updateExpense(editingExpense.id, payload); 
         alert('Expense updated successfully!'); 
       } else { 
-        await api.post('/api/expenses', payload); 
+        res = await api.createExpense(payload); 
         alert('Expense created successfully!'); 
       }
+      await res.json();
       setShowModal(false); 
       setEditingExpense(null); 
       resetForm(); 
       fetchExpenses(); 
-      fetchAnalytics(); 
+      fetchSummary(); 
     } catch (error) { 
-      alert(error.response?.data?.detail || 'Failed to save expense'); 
+      alert('Failed to save expense'); 
     }
   };
 
@@ -110,10 +118,10 @@ const Expenses = () => {
   const handleDelete = async (id) => {
     if (!window.confirm('Are you sure you want to delete this expense?')) return;
     try { 
-      await api.delete('/api/expenses/' + id); 
+      await api.deleteExpense(id); 
       alert('Expense deleted successfully!'); 
       fetchExpenses(); 
-      fetchAnalytics(); 
+      fetchSummary(); 
     } catch (error) { 
       alert('Failed to delete expense'); 
     }
