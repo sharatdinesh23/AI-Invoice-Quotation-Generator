@@ -20,6 +20,7 @@ import Quotations from './pages/Quotations'
 import CreateQuotation from './pages/CreateQuotation'
 import PublicInvoiceView from './pages/PublicInvoiceView'
 import Landing from './pages/Landing'
+import Expenses from './pages/Expenses'
 
 function App() {
   const [session, setSession] = useState(null)
@@ -68,6 +69,7 @@ function App() {
             <Route path="/quotations" element={<Quotations />} />
             <Route path="/quotations/new" element={<CreateQuotation />} />
             <Route path="/quotations/:id/edit" element={<CreateQuotation />} />
+            <Route path="/expenses" element={<Expenses />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/payment-settings" element={<PaymentSettings />} />
             <Route path="/transactions" element={<Transactions />} />
