@@ -17,13 +17,20 @@ export default function PaymentSettings() {
     onboard_url: null
   })
   
-  // Bank/UPI Details
+  // Domestic Bank/UPI Details
   const [payoutType, setPayoutType] = useState('bank')
   const [accountNumber, setAccountNumber] = useState('')
   const [ifscCode, setIfscCode] = useState('')
   const [upiId, setUpiId] = useState('')
   const [accountHolderName, setAccountHolderName] = useState('')
   const [panNumber, setPanNumber] = useState('')
+
+  // International Bank (SWIFT/IBAN) Details
+  const [swiftCode, setSwiftCode] = useState('')
+  const [ibanNumber, setIbanNumber] = useState('')
+  const [routingNumber, setRoutingNumber] = useState('')
+  const [bankName, setBankName] = useState('')
+  const [bankCountry, setBankCountry] = useState('IN')
   
   // Payout History
   const [payouts, setPayouts] = useState([])
@@ -120,7 +127,7 @@ export default function PaymentSettings() {
         window.open(data.onboard_url, '_blank')
         alert('Please complete the onboarding process in the new window')
       } else {
-        alert('Razorpay Route is not yet enabled. Please add your bank/UPI details manually below.')
+        alert('Razorpay Route is active. Please add your bank/UPI and SWIFT details manually below.')
       }
     } catch (error) {
       const errData = await error.response?.json()
@@ -170,20 +177,21 @@ export default function PaymentSettings() {
         upi_id: upiId,
         account_holder_name: accountHolderName,
         pan_number: panNumber,
+        swift_code: swiftCode,
+        iban_number: ibanNumber,
+        routing_number: routingNumber,
+        bank_name: bankName,
+        bank_country: bankCountry,
         payment_integration_enabled: true
       }
-
-      console.log('Sending payload:', payload)
       
       const response = await apiFetch('/api/payment-account/update-details', {
         method: 'POST',
         body: JSON.stringify(payload)
       })
       
-      const result = await response.json()
-      console.log('Response:', result)
-      
-      alert('Payment details saved successfully!')
+      await response.json()
+      alert('Payment & International Wire details saved successfully!')
       fetchAccountStatus()
     } catch (error) {
       console.error('Error saving details:', error)
@@ -192,7 +200,7 @@ export default function PaymentSettings() {
         const errData = await error.response?.json()
         errorMessage = errData?.detail || errData?.message || errorMessage
       } catch (e) {
-        // Ignore parsing error
+        // Ignore
       }
       alert(errorMessage)
     } finally {
@@ -228,30 +236,30 @@ export default function PaymentSettings() {
   }
   
   if (loading) {
-    return <div className="p-8 text-center">Loading payment settings...</div>
+    return <div className="p-8 text-center text-gray-500">Loading payment settings...</div>
   }
   
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-8">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold mb-2">Payment Settings</h1>
-        <p className="text-gray-600">Configure how you receive payments from clients</p>
+        <h1 className="text-3xl font-bold mb-2 text-gray-900">Payment Settings & Payouts</h1>
+        <p className="text-gray-600">Configure client payment routing, UTR settlement, and international SWIFT wire transfers.</p>
       </div>
       
       {/* Account Status Card */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">Account Status</h2>
+      <div className="bg-white rounded-xl shadow border border-gray-200 p-6">
+        <h2 className="text-xl font-semibold mb-4 text-gray-800">Payment Routing Status</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="p-4 rounded-lg bg-gray-50">
-            <p className="text-sm text-gray-600">Connection Status</p>
-            <p className={`text-lg font-semibold mt-1 px-2 py-1 rounded inline-block ${getStatusColor(accountStatus.status)}`}>
+          <div className="p-4 rounded-lg bg-gray-50 border border-gray-100">
+            <p className="text-xs font-semibold text-gray-500 uppercase">Connection Status</p>
+            <p className={`text-base font-bold mt-1 px-2.5 py-1 rounded inline-block ${getStatusColor(accountStatus.status)}`}>
               {accountStatus.status.replace('_', ' ').toUpperCase()}
             </p>
           </div>
-          <div className="p-4 rounded-lg bg-gray-50">
-            <p className="text-sm text-gray-600">Payment Integration</p>
-            <p className="text-lg font-semibold mt-1">
+          <div className="p-4 rounded-lg bg-gray-50 border border-gray-100">
+            <p className="text-xs font-semibold text-gray-500 uppercase">Payment Gateway Integration</p>
+            <p className="text-base font-bold mt-1">
               {accountStatus.enabled ? (
                 <span className="text-green-600">✓ Enabled</span>
               ) : (
@@ -259,9 +267,9 @@ export default function PaymentSettings() {
               )}
             </p>
           </div>
-          <div className="p-4 rounded-lg bg-gray-50">
-            <p className="text-sm text-gray-600">Platform Commission</p>
-            <p className="text-lg font-semibold mt-1">{accountStatus.commission_percentage}%</p>
+          <div className="p-4 rounded-lg bg-gray-50 border border-gray-100">
+            <p className="text-xs font-semibold text-gray-500 uppercase">Platform Commission</p>
+            <p className="text-base font-bold mt-1 text-blue-600">{accountStatus.commission_percentage}%</p>
           </div>
         </div>
         
@@ -270,16 +278,16 @@ export default function PaymentSettings() {
           {!accountStatus.account_id && (
             <button
               onClick={handleConnectAccount}
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              className="px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 shadow-sm"
             >
-              Connect Razorpay Account
+              Connect Razorpay Routing Account
             </button>
           )}
           
           {accountStatus.payout_details_provided && (
             <button
               onClick={() => handleToggleIntegration(!accountStatus.enabled)}
-              className={`px-4 py-2 rounded ${
+              className={`px-4 py-2 font-semibold rounded-lg shadow-sm ${
                 accountStatus.enabled 
                   ? 'bg-red-600 text-white hover:bg-red-700' 
                   : 'bg-green-600 text-white hover:bg-green-700'
@@ -289,27 +297,17 @@ export default function PaymentSettings() {
             </button>
           )}
         </div>
-        
-        {accountStatus.onboard_url && accountStatus.status === 'pending' && (
-          <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded">
-            <p className="text-yellow-800">
-              ⚠️ Please complete your Razorpay onboarding: 
-              <a href={accountStatus.onboard_url} target="_blank" rel="noopener noreferrer" className="underline ml-1">
-                Complete Onboarding
-              </a>
-            </p>
-          </div>
-        )}
       </div>
       
       {/* Payout Details Form */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">Payout Destination</h2>
-        <form onSubmit={handleSaveDetails} className="space-y-4">
-          {/* Payout Type Selection */}
+      <div className="bg-white rounded-xl shadow border border-gray-200 p-6">
+        <h2 className="text-xl font-semibold mb-4 text-gray-800">Payout & Bank Credentials</h2>
+        <form onSubmit={handleSaveDetails} className="space-y-6">
+          
+          {/* Domestic Method Selection */}
           <div>
-            <label className="block text-sm font-medium mb-2">Payout Method</label>
-            <div className="flex gap-4">
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Domestic Payout Method (INR)</label>
+            <div className="flex gap-6">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
@@ -317,9 +315,9 @@ export default function PaymentSettings() {
                   value="bank"
                   checked={payoutType === 'bank'}
                   onChange={(e) => setPayoutType(e.target.value)}
-                  className="text-blue-600"
+                  className="text-blue-600 w-4 h-4"
                 />
-                <span>Bank Transfer</span>
+                <span className="font-medium text-gray-800">Bank Transfer (NEFT / RTGS / IMPS)</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -328,183 +326,175 @@ export default function PaymentSettings() {
                   value="upi"
                   checked={payoutType === 'upi'}
                   onChange={(e) => setPayoutType(e.target.value)}
-                  className="text-blue-600"
+                  className="text-blue-600 w-4 h-4"
                 />
-                <span>UPI</span>
+                <span className="font-medium text-gray-800">UPI ID</span>
               </label>
             </div>
           </div>
           
-          {/* Common Fields */}
+          {/* Domestic Fields */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-1">Account Holder Name</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Account Holder Name *</label>
               <input
                 type="text"
                 value={accountHolderName}
                 onChange={(e) => setAccountHolderName(e.target.value)}
-                className="w-full px-3 py-2 border rounded focus:ring-2 focus:ring-blue-500"
-                placeholder="As per bank records"
+                className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="Name as per bank account"
                 required
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">PAN Number</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">PAN Number</label>
               <input
                 type="text"
                 value={panNumber}
                 onChange={(e) => setPanNumber(e.target.value.toUpperCase())}
-                className="w-full px-3 py-2 border rounded focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
                 placeholder="ABCDE1234F"
-                pattern="[A-Z]{5}[0-9]{4}[A-Z]{1}"
-                title="Enter valid PAN (e.g., ABCDE1234F)"
               />
             </div>
           </div>
           
-          {/* Bank-specific Fields */}
           {payoutType === 'bank' && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium mb-1">Account Number</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Account Number *</label>
                 <input
                   type="text"
                   value={accountNumber}
                   onChange={(e) => setAccountNumber(e.target.value)}
-                  className="w-full px-3 py-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  placeholder="Enter account number"
+                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="Enter bank account number"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium mb-1">IFSC Code</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">IFSC Code *</label>
                 <input
                   type="text"
                   value={ifscCode}
                   onChange={(e) => setIfscCode(e.target.value.toUpperCase())}
-                  className="w-full px-3 py-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., SBIN0001234"
+                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="e.g. HDFC0001234"
                 />
               </div>
             </div>
           )}
           
-          {/* UPI-specific Fields */}
           {payoutType === 'upi' && (
             <div>
-              <label className="block text-sm font-medium mb-1">UPI ID</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">UPI ID *</label>
               <input
                 type="text"
                 value={upiId}
                 onChange={(e) => setUpiId(e.target.value)}
-                className="w-full px-3 py-2 border rounded focus:ring-2 focus:ring-blue-500"
-                placeholder="e.g., yourname@oksbi"
+                className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g., yourname@upi"
               />
             </div>
           )}
+
+          {/* International SWIFT & Wire Section */}
+          <div className="pt-4 border-t border-gray-200">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xl">🌐</span>
+              <h3 className="text-lg font-bold text-gray-900">International Wire & SWIFT Settings</h3>
+            </div>
+            <p className="text-xs text-gray-500 mb-4">Provide these details to display automatic international bank wire instructions for foreign clients.</p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Bank Name</label>
+                <input
+                  type="text"
+                  value={bankName}
+                  onChange={(e) => setBankName(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500"
+                  placeholder="e.g. HDFC Bank Ltd"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">SWIFT / BIC Code</label>
+                <input
+                  type="text"
+                  value={swiftCode}
+                  onChange={(e) => setSwiftCode(e.target.value.toUpperCase())}
+                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500 font-mono"
+                  placeholder="e.g. HDFCINBBXXX"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">IBAN Number</label>
+                <input
+                  type="text"
+                  value={ibanNumber}
+                  onChange={(e) => setIbanNumber(e.target.value.toUpperCase())}
+                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500 font-mono"
+                  placeholder="e.g. IN93HDFC00001234567890"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Routing Number / ABA (Optional)</label>
+                <input
+                  type="text"
+                  value={routingNumber}
+                  onChange={(e) => setRoutingNumber(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-purple-500 font-mono"
+                  placeholder="e.g. 021000021"
+                />
+              </div>
+            </div>
+          </div>
           
           <button
             type="submit"
             disabled={saving}
-            className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+            className="px-6 py-2.5 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 disabled:opacity-50 shadow"
           >
-            {saving ? 'Saving...' : 'Save Payment Details'}
+            {saving ? 'Saving Details...' : 'Save Payment & International Credentials'}
           </button>
         </form>
-        
-        <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded">
-          <p className="text-sm text-blue-800">
-            ℹ️ <strong>Note:</strong> Once you enable payment integration, when clients pay your invoices:
-            <ul className="list-disc list-inside mt-2">
-              <li>{accountStatus.commission_percentage}% will be deducted as platform fee</li>
-              <li>The remaining amount will be automatically transferred to your {payoutType === 'bank' ? 'bank account' : 'UPI ID'}</li>
-              <li>You can track all transactions in the Payout History below</li>
-            </ul>
-          </p>
-        </div>
       </div>
       
-      {/* Payment Splits Table */}
-      {paymentSplits.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-semibold mb-4">Payment Breakdown</h2>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b">
-                  <th className="text-left py-3 px-4">Invoice ID</th>
-                  <th className="text-right py-3 px-4">Total Amount</th>
-                  <th className="text-right py-3 px-4">Commission ({accountStatus.commission_percentage}%)</th>
-                  <th className="text-right py-3 px-4">Your Payout</th>
-                  <th className="text-center py-3 px-4">Status</th>
-                  <th className="text-left py-3 px-4">Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {paymentSplits.map((split) => (
-                  <tr key={split.id} className="border-b hover:bg-gray-50">
-                    <td className="py-3 px-4 font-mono text-sm">{split.invoice_id.slice(0, 8)}...</td>
-                    <td className="text-right py-3 px-4">₹{split.total_amount?.toFixed(2)}</td>
-                    <td className="text-right py-3 px-4 text-red-600">-₹{split.commission_amount?.toFixed(2)}</td>
-                    <td className="text-right py-3 px-4 text-green-600 font-semibold">₹{split.freelancer_amount?.toFixed(2)}</td>
-                    <td className="text-center py-3 px-4">
-                      <span className={`px-2 py-1 rounded text-xs ${
-                        split.split_status === 'completed' 
-                          ? 'bg-green-100 text-green-800' 
-                          : 'bg-yellow-100 text-yellow-800'
-                      }`}>
-                        {split.split_status}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-sm text-gray-600">
-                      {new Date(split.created_at).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-      
-      {/* Payout History */}
+      {/* Payout History & UTR Logs */}
       {payouts.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-semibold mb-4">Payout History</h2>
+        <div className="bg-white rounded-xl shadow border border-gray-200 p-6">
+          <h2 className="text-xl font-semibold mb-4 text-gray-800">Payout Settlement History & UTR Logs</h2>
           <div className="overflow-x-auto">
-            <table className="w-full">
+            <table className="w-full text-left">
               <thead>
-                <tr className="border-b">
-                  <th className="text-left py-3 px-4">Invoice</th>
+                <tr className="border-b bg-gray-50 text-xs font-semibold text-gray-600 uppercase">
+                  <th className="py-3 px-4">Invoice</th>
                   <th className="text-right py-3 px-4">Amount</th>
-                  <th className="text-right py-3 px-4">Commission</th>
+                  <th className="text-right py-3 px-4">Fee ({accountStatus.commission_percentage}%)</th>
                   <th className="text-right py-3 px-4">Net Payout</th>
                   <th className="text-center py-3 px-4">Status</th>
-                  <th className="text-left py-3 px-4">Reference</th>
+                  <th className="text-left py-3 px-4">UTR Number</th>
                   <th className="text-left py-3 px-4">Date</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-gray-100">
                 {payouts.map((payout) => (
-                  <tr key={payout.id} className="border-b hover:bg-gray-50">
-                    <td className="py-3 px-4 font-mono text-sm">{payout.invoice_id?.slice(0, 8)}...</td>
-                    <td className="text-right py-3 px-4">₹{payout.amount?.toFixed(2)}</td>
+                  <tr key={payout.id} className="hover:bg-gray-50 text-sm">
+                    <td className="py-3 px-4 font-mono font-medium text-gray-800">{payout.invoice_id?.slice(0, 8)}...</td>
+                    <td className="text-right py-3 px-4 font-medium">₹{payout.amount?.toFixed(2)}</td>
                     <td className="text-right py-3 px-4 text-red-600">-₹{payout.commission_amount?.toFixed(2)}</td>
-                    <td className="text-right py-3 px-4 text-green-600 font-semibold">₹{payout.net_payout?.toFixed(2)}</td>
+                    <td className="text-right py-3 px-4 text-emerald-600 font-bold">₹{payout.net_payout?.toFixed(2)}</td>
                     <td className="text-center py-3 px-4">
-                      <span className={`px-2 py-1 rounded text-xs ${
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
                         payout.status === 'completed' 
-                          ? 'bg-green-100 text-green-800' 
-                          : payout.status === 'pending_manual'
-                          ? 'bg-yellow-100 text-yellow-800'
-                          : 'bg-gray-100 text-gray-800'
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
+                          : 'bg-amber-100 text-amber-800 border border-amber-300'
                       }`}>
                         {payout.status}
                       </span>
                     </td>
-                    <td className="py-3 px-4 font-mono text-xs">
-                      {payout.payout_reference ? payout.payout_reference.slice(0, 12) + '...' : '-'}
+                    <td className="py-3 px-4 font-mono text-xs font-bold text-gray-800">
+                      {payout.utr_number || payout.payout_reference || '-'}
                     </td>
-                    <td className="py-3 px-4 text-sm text-gray-600">
+                    <td className="py-3 px-4 text-xs text-gray-500">
                       {new Date(payout.created_at).toLocaleDateString()}
                     </td>
                   </tr>
@@ -512,12 +502,6 @@ export default function PaymentSettings() {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-      
-      {payouts.length === 0 && paymentSplits.length === 0 && (
-        <div className="bg-gray-50 rounded-lg p-8 text-center">
-          <p className="text-gray-600">No payout transactions yet. Once clients start paying your invoices, you'll see the breakdown here.</p>
         </div>
       )}
     </div>

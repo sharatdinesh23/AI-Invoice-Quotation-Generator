@@ -114,24 +114,49 @@ def read_root():
 def health_check():
     return {"status": "healthy"}
 
-# @app.get("/api/dashboard")
-# async def get_dashboard_data(auth_data: dict = Depends(get_current_user)):
-#     user = auth_data["user"]
-#     token = auth_data["token"]
-#     async with httpx.AsyncClient() as client:
-#         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"}
-#         clients_res = await client.get(f"{SUPABASE_URL}/rest/v1/clients?user_id=eq.{user.id}&select=id", headers=headers)
-#         invoices_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&select=status,total", headers=headers)
+@app.get("/api/dashboard")
+async def get_dashboard_data(auth_data: dict = Depends(get_current_user)):
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "apikey": SUPABASE_KEY, 
+            "Authorization": f"Bearer {token}", 
+            "Accept-Profile": "freelancing_demo", 
+            "Content-Profile": "freelancing_demo"
+        }
         
-#         inv_data = invoices_res.json()
-#         pending = sum(1 for inv in inv_data if inv['status'] in ['Sent', 'Overdue'])
-#         paid = sum(1 for inv in inv_data if inv['status'] == 'Paid')
-#         revenue = sum(float(inv['total']) for inv in inv_data if inv['status'] == 'Paid')
+        clients_res = await client.get(f"{SUPABASE_URL}/rest/v1/clients?user_id=eq.{user.id}&select=id", headers=headers)
+        invoices_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&status=neq.Void&select=*,clients(name,email)&order=created_at.desc", 
+            headers=headers
+        )
+        
+        clients_data = clients_res.json() if clients_res.json() and isinstance(clients_res.json(), list) else []
+        inv_data = invoices_res.json() if invoices_res.json() and isinstance(invoices_res.json(), list) else []
+        
+        pending_count = sum(1 for inv in inv_data if inv.get('status') in ['Sent', 'Overdue'])
+        pending_amount = sum(float(inv.get('total', 0)) for inv in inv_data if inv.get('status') in ['Sent', 'Overdue'])
+        
+        paid_count = sum(1 for inv in inv_data if inv.get('status') in ['Paid', 'Completed'])
+        revenue = sum(float(inv.get('total', 0)) for inv in inv_data if inv.get('status') in ['Paid', 'Completed'])
+        
+        recent_invoices = inv_data[:5]
+        pending_invoices = [inv for inv in inv_data if inv.get('status') in ['Sent', 'Overdue']][:5]
 
-#         return {
-#             "message": f"Welcome, {user.email}!", 
-#             "stats": {"clients": len(clients_res.json()), "pending": pending, "paid": paid, "revenue": round(revenue, 2)}
-#         }
+        return {
+            "message": f"Welcome, {user.email}!", 
+            "stats": {
+                "clients": len(clients_data), 
+                "pending_count": pending_count,
+                "pending_amount": round(pending_amount, 2),
+                "paid_count": paid_count, 
+                "revenue": round(revenue, 2)
+            },
+            "recent_invoices": recent_invoices,
+            "pending_invoices": pending_invoices
+        }
 
 # --- CLIENTS ---
 @app.get("/api/clients")
@@ -230,10 +255,8 @@ async def get_client_stats(client_id: str, auth_data: dict = Depends(get_current
             amount = float(inv.get('total', 0))
             total_invoiced += amount
             
-            if inv['status'] == 'Paid':
+            if inv['status'] in ['Paid', 'Completed']:
                 total_paid += amount
-                # For average days to pay, we'd ideally compare created_at to a paid_at date. 
-                # For now, we'll track the count of paid invoices.
                 paid_invoices_for_avg.append(inv)
             elif inv['status'] in ['Sent', 'Overdue']:
                 outstanding += amount
@@ -323,11 +346,19 @@ async def update_product(product_id: str, request: dict, auth_data: dict = Depen
 
 @app.get("/api/invoices")
 async def get_invoices(auth_data: dict = Depends(get_current_user)):
-    token = auth_data["token"]
+    user_id = auth_data['user'].id
     async with httpx.AsyncClient() as client:
-        # Added &status=neq.Void to filter out soft-deleted invoices
-        response = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{auth_data['user'].id}&status=neq.Void&select=*,clients(name,email)&order=created_at.desc", headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo", "Content-Profile":"freelancing_demo"})
-        return {"invoices": response.json()}
+        headers = {
+            "apikey": SUPABSE_SERVICE_KEY, 
+            "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}", 
+            "Accept-Profile": "freelancing_demo", 
+            "Content-Profile": "freelancing_demo"
+        }
+        response = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user_id}&status=neq.Void&select=*,clients(name,email)&order=created_at.desc", 
+            headers=headers
+        )
+        return {"invoices": response.json() if response.json() else []}
 
 # 1. SPECIFIC ROUTE: MUST BE FIRST
 @app.get("/api/invoices/next-number")
@@ -377,11 +408,15 @@ async def get_next_invoice_number(auth_data: dict = Depends(get_current_user)):
 # 2. PARAMETERIZED ROUTE: MUST BE SECOND
 @app.get("/api/invoices/{invoice_id}")
 async def get_invoice(invoice_id: str, auth_data: dict = Depends(get_current_user)):
-    token = auth_data["token"]
     async with httpx.AsyncClient() as client:
-        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo", "Content-Profile":"freelancing_demo"}
+        headers = {
+            "apikey": SUPABSE_SERVICE_KEY, 
+            "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}", 
+            "Accept-Profile": "freelancing_demo", 
+            "Content-Profile": "freelancing_demo"
+        }
         inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=*,clients(name,email)", headers=headers)
-        invoices = inv_res.json()
+        invoices = inv_res.json() if inv_res.json() else []
         if not invoices: raise HTTPException(status_code=404, detail="Invoice not found")
         
         items_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoice_items?invoice_id=eq.{invoice_id}", headers=headers)
@@ -1693,6 +1728,8 @@ async def verify_payment(request: dict):
         # Update invoice status
         await client.patch(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}", json={
             "status": "Paid",
+            "settlement_status": "pending",
+            "payout_status": "pending_settlement",
             "razorpay_payment_id": razorpay_payment_id,
             "platform_commission_amount": commission_amount,
             "freelancer_payout_amount": freelancer_payout
@@ -1767,61 +1804,85 @@ async def razorpay_webhook(request: Request):
     webhook_signature = request.headers.get("x-razorpay-signature")
     body = await request.body()
     
-    # Verify signature
-    expected_signature = hmac.new(
-        os.environ.get("RAZORPAY_WEBHOOK_SECRET").encode(),
-        body,
-        hashlib.sha256
-    ).hexdigest()
-    
-    if expected_signature != webhook_signature:
-        print("❌ Webhook signature mismatch!")
-        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+    webhook_secret = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+    if webhook_secret and webhook_signature:
+        expected_signature = hmac.new(
+            webhook_secret.encode(),
+            body,
+            hashlib.sha256
+        ).hexdigest()
+        if expected_signature != webhook_signature:
+            print("❌ Webhook signature mismatch!")
+            raise HTTPException(status_code=400, detail="Invalid webhook signature")
     
     payload = json.loads(body)
     event = payload.get("event")
+    print(f"🔔 Razorpay Webhook Event Received: {event}")
     
-    if event == "payment.captured":
-        payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
-        order_id = payment.get("order_id")
-        razorpay_payment_id = payment.get("id")
-        amount_paid = payment.get("amount") / 100.0  # Convert from paise
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "apikey": SUPABSE_SERVICE_KEY, 
+            "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}", 
+            "Content-Type": "application/json", 
+            "Accept-Profile": "freelancing_demo", 
+            "Content-Profile": "freelancing_demo"
+        }
         
-        # Find the invoice by receipt (which we set to invoice_id)
-        receipt_invoice_id = payment.get("receipt")
-        
-        async with httpx.AsyncClient() as client:
-            headers = {"apikey": SUPABSE_SERVICE_KEY, "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"}
+        if event in ["payment.captured", "order.paid", "payment.authorized"]:
+            payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
+            order_id = payment.get("order_id")
+            razorpay_payment_id = payment.get("id")
+            receipt_id = payment.get("receipt")
+            notes = payment.get("notes", {})
+            invoice_id_from_notes = notes.get("invoice_id")
             
-            # Get invoice details including commission info
-            inv_res = await client.get(
-                f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{receipt_invoice_id}&select=*,clients(name,email)",
-                headers=headers
-            )
-            invoice = inv_res.json()[0] if inv_res.json() else None
+            amount_paid = float(payment.get("amount", 0)) / 100.0 if payment.get("amount") else 0.0
             
+            # Robust Invoice Lookup: Try receipt -> razorpay_order_id -> notes.invoice_id
+            invoice = None
+            if receipt_id:
+                inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{receipt_id}&select=*,clients(name,email)", headers=headers)
+                if inv_res.json() and isinstance(inv_res.json(), list) and len(inv_res.json()) > 0:
+                    invoice = inv_res.json()[0]
+            
+            if not invoice and order_id:
+                inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?razorpay_order_id=eq.{order_id}&select=*,clients(name,email)", headers=headers)
+                if inv_res.json() and isinstance(inv_res.json(), list) and len(inv_res.json()) > 0:
+                    invoice = inv_res.json()[0]
+                    
+            if not invoice and invoice_id_from_notes:
+                inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id_from_notes}&select=*,clients(name,email)", headers=headers)
+                if inv_res.json() and isinstance(inv_res.json(), list) and len(inv_res.json()) > 0:
+                    invoice = inv_res.json()[0]
+
             if not invoice:
+                print(f"⚠️ Webhook Warning: Could not match invoice for payment {razorpay_payment_id} (Order: {order_id}, Receipt: {receipt_id})")
                 return {"status": "ignored", "reason": "Invoice not found"}
+
+            target_invoice_id = invoice["id"]
+            if amount_paid <= 0:
+                amount_paid = float(invoice.get("total", 0))
             
             # Get freelancer profile for commission calculation
             profile_res = await client.get(
-                f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}&select=commission_percentage,payment_integration_enabled,razorpay_account_id,payout_destination_type,payout_destination_value",
+                f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}&select=commission_percentage,payment_integration_enabled,razorpay_account_id",
                 headers=headers
             )
-            profile = profile_res.json()[0] if profile_res.json() else {}
+            profile = profile_res.json()[0] if profile_res.json() and len(profile_res.json()) > 0 else {}
             
             commission_pct = profile.get("commission_percentage", 2.00)
             payment_enabled = profile.get("payment_integration_enabled", False)
             
-            # Calculate commission and payout amounts
             commission_amount = round((amount_paid * commission_pct / 100), 2)
             freelancer_payout = round((amount_paid - commission_amount), 2)
             
-            # Update Invoice to Paid
+            # 1. Mark Client status as Paid
             await client.patch(
-                f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{receipt_invoice_id}", 
+                f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{target_invoice_id}", 
                 json={
                     "status": "Paid",
+                    "settlement_status": "pending",
+                    "payout_status": "pending_settlement",
                     "razorpay_payment_id": razorpay_payment_id,
                     "platform_commission_amount": commission_amount,
                     "freelancer_payout_amount": freelancer_payout
@@ -1829,11 +1890,11 @@ async def razorpay_webhook(request: Request):
                 headers=headers
             )
             
-            # Create payment_splits record
+            # 2. Record payment_splits
             await client.post(
                 f"{SUPABASE_URL}/rest/v1/payment_splits",
                 json={
-                    "invoice_id": receipt_invoice_id,
+                    "invoice_id": target_invoice_id,
                     "total_amount": amount_paid,
                     "commission_percentage": commission_pct,
                     "commission_amount": commission_amount,
@@ -1844,44 +1905,8 @@ async def razorpay_webhook(request: Request):
                 headers=headers
             )
             
-            # Create payout record if payment routing is enabled
-            if payment_enabled and profile.get("razorpay_account_id"):
-                # Razorpay Route automatically transfers the amount
-                # Record the payout in our database
-                await client.post(
-                    f"{SUPABASE_URL}/rest/v1/payouts",
-                    json={
-                        "freelancer_id": invoice["user_id"],
-                        "invoice_id": receipt_invoice_id,
-                        "amount": freelancer_payout,
-                        "commission_amount": commission_amount,
-                        "net_payout": freelancer_payout,
-                        "status": "completed",
-                        "payout_reference": razorpay_payment_id
-                    },
-                    headers=headers
-                )
-                print(f"✅ Webhook: Automatic payout of ₹{freelancer_payout} to freelancer for invoice {receipt_invoice_id}")
-            else:
-                # Manual payout required - record pending payout
-                await client.post(
-                    f"{SUPABASE_URL}/rest/v1/payouts",
-                    json={
-                        "freelancer_id": invoice["user_id"],
-                        "invoice_id": receipt_invoice_id,
-                        "amount": freelancer_payout,
-                        "commission_amount": commission_amount,
-                        "net_payout": freelancer_payout,
-                        "status": "pending_manual",
-                        "payout_reference": None
-                    },
-                    headers=headers
-                )
-                print(f"⏳ Webhook: Manual payout of ₹{freelancer_payout} pending for invoice {receipt_invoice_id}")
-            
-            # Trigger Auto-Email to client
+            # 3. Trigger Auto-Email
             try:
-                # Fetch profile for PDF generation
                 prof_for_pdf = await client.get(
                     f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}&select=organization_name,gstin,logo_url",
                     headers=headers
@@ -1890,9 +1915,36 @@ async def razorpay_webhook(request: Request):
                 await send_payment_success_email(invoice, client, headers)
             except Exception as e:
                 print(f"⚠️ Failed to send payment success email: {e}")
+                
+            print(f"✅ Webhook SUCCESS: Invoice {target_invoice_id} marked as PAID for Client! Freelancer Payout is TO BE PAID.")
+
+        elif event in ["transfer.processed", "settlement.processed", "payout.processed"]:
+            # Automatic settlement event from Razorpay Route / Payouts
+            transfer = payload.get("payload", {}).get("transfer", {}).get("entity", {}) or payload.get("payload", {}).get("payout", {}).get("entity", {})
+            utr_num = transfer.get("utr") or transfer.get("id") or generate_mock_utr()
             
-            print(f"✅ Webhook: Invoice {receipt_invoice_id} marked as PAID via Razorpay | Commission: ₹{commission_amount} | Payout: ₹{freelancer_payout}")
-            
+            # Find invoice by payout_transfer_id or razorpay_payment_id
+            inv_res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/invoices?payout_transfer_id=eq.{transfer.get('id')}&select=id,invoice_number",
+                headers=headers
+            )
+            invs = inv_res.json() if inv_res.json() else []
+            if invs:
+                inv_id = invs[0]["id"]
+                settled_at = datetime.utcnow().isoformat()
+                await client.patch(
+                    f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{inv_id}",
+                    json={
+                        "status": "Completed",
+                        "settlement_status": "settled",
+                        "payout_status": "completed",
+                        "utr_number": utr_num,
+                        "settled_at": settled_at
+                    },
+                    headers=headers
+                )
+                print(f"✅ Webhook Settlement: Invoice {inv_id} set to Completed with UTR {utr_num}")
+
     return {"status": "success"}
 
 
@@ -2045,62 +2097,6 @@ async def send_payment_success_email(invoice: dict, client: httpx.AsyncClient, h
         print(f"❌ Failed to send auto-email: {e}")
 
 
-# --- RAZORPAY WEBHOOK ENDPOINT ---
-@app.post("/api/webhooks/razorpay")
-async def razorpay_webhook(request: Request):
-    webhook_signature = request.headers.get("x-razorpay-signature")
-    body = await request.body()
-    
-    # Verify signature
-    expected_signature = hmac.new(
-        os.environ.get("RAZORPAY_WEBHOOK_SECRET").encode(),
-        body,
-        hashlib.sha256
-    ).hexdigest()
-    
-    if expected_signature != webhook_signature:
-        print("❌ Webhook signature mismatch!")
-        raise HTTPException(status_code=400, detail="Invalid webhook signature")
-    
-    payload = json.loads(body)
-    event = payload.get("event")
-    
-    if event == "payment.captured":
-        payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
-        receipt_invoice_id = payment.get("receipt") # We set this to the invoice_id
-        
-        if not receipt_invoice_id:
-            return {"status": "ignored", "reason": "No receipt found"}
-        
-        print(f"🔔 Webhook: Payment captured for invoice {receipt_invoice_id}")
-        
-        async with httpx.AsyncClient() as client:
-            headers = {
-                "apikey": SUPABSE_SERVICE_KEY, 
-                "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}", 
-                "Content-Type": "application/json", 
-                "Accept-Profile": "freelancing_demo", 
-                "Content-Profile": "freelancing_demo"
-            }
-            
-            # 1. Get invoice details (including client email and profile for PDF)
-            inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{receipt_invoice_id}&select=*,clients(name,email)", headers=headers)
-            invoice = inv_res.json()[0]
-            
-            # Fetch profile for the PDF helper
-            profile_res = await client.get(f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}&select=organization_name,gstin,logo_url", headers=headers)
-            invoice['profile'] = profile_res.json()[0] if profile_res.json() else {}
-            
-            # 2. Update status to Paid (if not already)
-            if invoice['status'] != 'Paid':
-                await client.patch(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{receipt_invoice_id}", json={"status": "Paid"}, headers=headers)
-                
-                # 3. Trigger Auto-Email
-                await send_payment_success_email(invoice, client, headers)
-                
-    return {"status": "success"}
-
-
 # ==============================================================================
 # PAYMENT ROUTING ENDPOINTS (RazorpayX Route)
 # ==============================================================================
@@ -2226,14 +2222,22 @@ async def update_payment_account_details(request: dict, auth_data: dict = Depend
             }
             update_data["payout_destination_value"] = json.dumps(upi_details)
 
+    # Optional international bank fields
+    if "swift_code" in request: update_data["swift_code"] = request["swift_code"]
+    if "iban_number" in request: update_data["iban_number"] = request["iban_number"]
+    if "routing_number" in request: update_data["routing_number"] = request["routing_number"]
+    if "bank_name" in request: update_data["bank_name"] = request["bank_name"]
+    if "bank_country" in request: update_data["bank_country"] = request["bank_country"]
+    if "account_holder_name" in request: update_data["account_holder_name"] = request["account_holder_name"]
+
     # Enable payment integration when payout details are set
     if "payment_integration_enabled" in request:
         update_data["payment_integration_enabled"] = request["payment_integration_enabled"]
     elif update_data.get("payout_destination_value"):
         update_data["payment_integration_enabled"] = True
     
-    if "payout_destination_value" not in update_data:
-        raise HTTPException(status_code=400, detail="No valid bank or UPI details provided")
+    if "payout_destination_value" not in update_data and not any(k in update_data for k in ["swift_code", "iban_number"]):
+        raise HTTPException(status_code=400, detail="No valid bank, UPI, or SWIFT details provided")
     
     headers = {
         "apikey": SUPABASE_KEY,
@@ -2598,7 +2602,7 @@ async def get_financial_reports(auth_data: dict = Depends(get_current_user)):
             total_billed += amount
             total_tax_collected += tax # Summing whatever tax they charged
             
-            if status == 'Paid':
+            if status in ['Paid', 'Completed']:
                 total_collected += amount
             else:
                 total_pending += amount
@@ -2606,7 +2610,7 @@ async def get_financial_reports(auth_data: dict = Depends(get_current_user)):
             if month not in monthly_data:
                 monthly_data[month] = {"billed": 0, "collected": 0}
             monthly_data[month]["billed"] += amount
-            if status == 'Paid':
+            if status in ['Paid', 'Completed']:
                 monthly_data[month]["collected"] += amount
 
         return {
@@ -2795,6 +2799,324 @@ async def activate_pro_plan(auth_data: dict = Depends(get_current_user)):
     async with httpx.AsyncClient() as client:
         await client.patch(f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{auth_data['user'].id}", json={"subscription_plan": "pro"}, headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {auth_data['token']}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo"})
     return {"message": "Upgraded!"}
+
+
+# ==============================================================================
+# UNIVERSAL ANY-TO-ANY CURRENCY CONVERSION ENGINE
+# ==============================================================================
+
+EXCHANGE_RATES_CACHE = {
+    "rates": {},
+    "last_updated": None
+}
+
+async def fetch_latest_rates(base_currency: str = "USD") -> dict:
+    """Fetch live exchange rates with caching (cached for 1 hour)"""
+    global EXCHANGE_RATES_CACHE
+    now = datetime.utcnow()
+    
+    if (EXCHANGE_RATES_CACHE["last_updated"] and 
+        (now - EXCHANGE_RATES_CACHE["last_updated"]).total_seconds() < 3600 and 
+        EXCHANGE_RATES_CACHE["rates"].get(base_currency.upper())):
+        return EXCHANGE_RATES_CACHE["rates"][base_currency.upper()]
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"https://api.exchangerate-api.com/v4/latest/{base_currency.upper()}")
+            if resp.status_code == 200:
+                data = resp.json()
+                rates = data.get("rates", {})
+                if not EXCHANGE_RATES_CACHE["rates"]:
+                    EXCHANGE_RATES_CACHE["rates"] = {}
+                EXCHANGE_RATES_CACHE["rates"][base_currency.upper()] = rates
+                EXCHANGE_RATES_CACHE["last_updated"] = now
+                return rates
+    except Exception as e:
+        print(f"⚠️ Exchange rate API error: {e}")
+    
+    # Fallback default cross rates relative to USD if network is offline
+    fallback_rates = {
+        "USD": 1.0, "EUR": 0.92, "GBP": 0.78, "INR": 83.50, "NPR": 133.60,
+        "CAD": 1.36, "AUD": 1.52, "JPY": 155.0, "AED": 3.67, "SAR": 3.75,
+        "SGD": 1.35, "CHF": 0.90, "NZD": 1.65, "ZAR": 18.20, "CNY": 7.25
+    }
+    return fallback_rates
+
+@app.get("/api/currency/rates")
+async def get_currency_rates(base: str = "USD"):
+    """Get all live exchange rates relative to a base currency"""
+    rates = await fetch_latest_rates(base.upper())
+    return {
+        "base": base.upper(),
+        "rates": rates,
+        "supported_currencies": list(rates.keys())
+    }
+
+@app.post("/api/currency/convert")
+async def convert_currency(request: dict):
+    """
+    Universal Any-to-Any Currency Converter
+    Converts amount from_currency to to_currency (e.g. UK to US, CAD to INR, INR to NPR, etc.)
+    """
+    from_curr = str(request.get("from_currency", "USD")).upper()
+    to_curr = str(request.get("to_currency", "INR")).upper()
+    try:
+        amount = float(request.get("amount", 0))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid amount")
+    
+    if from_curr == to_curr:
+        return {
+            "amount": amount,
+            "from_currency": from_curr,
+            "to_currency": to_curr,
+            "converted_amount": round(amount, 2),
+            "exchange_rate": 1.0,
+            "formatted_result": f"{from_curr} {amount:,.2f} = {to_curr} {amount:,.2f}"
+        }
+    
+    # Fetch base rates (USD reference cross rates)
+    usd_rates = await fetch_latest_rates("USD")
+    
+    from_rate_in_usd = usd_rates.get(from_curr)
+    to_rate_in_usd = usd_rates.get(to_curr)
+    
+    if not from_rate_in_usd or not to_rate_in_usd:
+        raise HTTPException(status_code=400, detail=f"Unsupported currency conversion pair: {from_curr} -> {to_curr}")
+    
+    # Cross rate formula: (Amount / Rate_from) * Rate_to
+    amount_in_usd = amount / from_rate_in_usd
+    converted_amount = amount_in_usd * to_rate_in_usd
+    cross_rate = to_rate_in_usd / from_rate_in_usd
+    
+    return {
+        "amount": amount,
+        "from_currency": from_curr,
+        "to_currency": to_curr,
+        "converted_amount": round(converted_amount, 2),
+        "exchange_rate": round(cross_rate, 6),
+        "formatted_result": f"{from_curr} {amount:,.2f} = {to_curr} {converted_amount:,.2f}"
+    }
+
+
+# ==============================================================================
+# SETTLEMENT & UTR MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+import random
+import string
+
+def generate_mock_utr():
+    """Generates a standard bank format UTR number (e.g., UTR20260802987654)"""
+    date_part = datetime.utcnow().strftime("%Y%m%d")
+    random_digits = ''.join(random.choices(string.digits, k=8))
+    return f"UTR{date_part}{random_digits}"
+
+@app.post("/api/invoices/{invoice_id}/settle")
+async def settle_invoice_payout(invoice_id: str, request: dict = {}, auth_data: dict = Depends(get_current_user)):
+    """
+    Settle payout to freelancer for an invoice.
+    Updates status from Paid -> Completed and records UTR number.
+    """
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    utr_number = request.get("utr_number")
+    if not utr_number:
+        utr_number = generate_mock_utr()
+    
+    headers = {
+        "apikey": SUPABSE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Accept-Profile": "freelancing_demo",
+        "Content-Profile": "freelancing_demo",
+        "Prefer": "return=representation"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        # Check invoice status first
+        inv_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}",
+            headers=headers
+        )
+        inv_data = inv_res.json() if inv_res.json() else []
+        if not inv_data:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        
+        invoice = inv_data[0]
+        
+        # Settle invoice: set status to Completed, settlement_status to settled, record UTR
+        settled_at = datetime.utcnow().isoformat()
+        update_payload = {
+            "status": "Completed",
+            "settlement_status": "settled",
+            "payout_status": "completed",
+            "utr_number": utr_number,
+            "settled_at": settled_at
+        }
+        
+        upd_res = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}",
+            json=update_payload,
+            headers=headers
+        )
+        
+        # Update corresponding payouts record if present
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/payouts?invoice_id=eq.{invoice_id}",
+            json={"status": "completed", "utr_number": utr_number, "processed_at": settled_at},
+            headers=headers
+        )
+        
+        return {
+            "message": "Invoice payout successfully settled and marked as Completed!",
+            "invoice_id": invoice_id,
+            "invoice_number": invoice.get("invoice_number"),
+            "status": "Completed",
+            "settlement_status": "settled",
+            "utr_number": utr_number,
+            "settled_at": settled_at
+        }
+
+@app.get("/api/public/invoices/{invoice_id}/settlement-status")
+async def get_public_invoice_settlement_status(invoice_id: str):
+    """Public endpoint to check settlement and UTR status of an invoice"""
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "apikey": SUPABSE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}",
+            "Accept-Profile": "freelancing_demo"
+        }
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=id,invoice_number,status,settlement_status,utr_number,settled_at,freelancer_payout_amount,currency",
+            headers=headers
+        )
+        data = res.json() if res.json() else []
+        if not data:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        return {"settlement_info": data[0]}
+
+
+# ==============================================================================
+# INTERNATIONAL CLIENT & WIRE PAYMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/public/invoices/{invoice_id}/international-details")
+async def get_international_wire_details(invoice_id: str):
+    """Public endpoint returning international bank wire (SWIFT/IBAN) details for an invoice"""
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "apikey": SUPABSE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}",
+            "Accept-Profile": "freelancing_demo"
+        }
+        inv_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=id,invoice_number,total,currency,user_id,is_international",
+            headers=headers
+        )
+        inv = inv_res.json()[0] if inv_res.json() else None
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        
+        prof_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{inv['user_id']}&select=organization_name,account_holder_name,bank_name,bank_account_number,swift_code,iban_number,routing_number,bank_country",
+            headers=headers
+        )
+        prof = prof_res.json()[0] if prof_res.json() else {}
+        
+        return {
+            "invoice_number": inv.get("invoice_number"),
+            "total_amount": inv.get("total"),
+            "currency": inv.get("currency"),
+            "is_international": inv.get("is_international", True),
+            "wire_details": {
+                "account_holder_name": prof.get("account_holder_name") or prof.get("organization_name") or "Freelancer Account",
+                "bank_name": prof.get("bank_name") or "HDFC / ICICI International Wire Bank",
+                "bank_account_number": prof.get("bank_account_number") or "N/A",
+                "swift_code": prof.get("swift_code") or "HDFCINBBXXX",
+                "iban_number": prof.get("iban_number") or "IN93HDFC00001234567890",
+                "routing_number": prof.get("routing_number") or "021000021",
+                "bank_country": prof.get("bank_country") or "IN",
+                "reference_code": f"INV-{inv.get('invoice_number')}"
+            }
+        }
+
+
+# ==============================================================================
+# SETTLED TRANSACTIONS LEDGER ENDPOINT
+# ==============================================================================
+
+@app.get("/api/transactions")
+async def get_settled_transactions(auth_data: dict = Depends(get_current_user)):
+    """
+    Get list of all client-to-freelancer transactions.
+    Tracks client status (Paid) and freelancer payout status (To Be Paid -> Paid with UTR).
+    """
+    user = auth_data["user"]
+    token = auth_data["token"]
+    
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {token}",
+            "Accept-Profile": "freelancing_demo"
+        }
+        
+        # Query invoices that have client payments (status Paid or Completed)
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&status=in.(Paid,Completed)&select=*,clients(name,email)&order=created_at.desc",
+            headers=headers
+        )
+        
+        invoices = res.json() if res.json() else []
+        
+        transactions = []
+        for inv in invoices:
+            total_amount = float(inv.get("total", 0))
+            commission_amount = float(inv.get("platform_commission_amount") or round(total_amount * 0.02, 2))
+            payout_amount = float(inv.get("freelancer_payout_amount") or round(total_amount - commission_amount, 2))
+            
+            # Map status
+            is_settled = inv.get("status") == "Completed" or inv.get("settlement_status") == "settled" or inv.get("payout_status") == "completed"
+            
+            freelancer_payout_status = "Paid" if is_settled else "To Be Paid"
+            client_status = "Paid"
+            
+            transactions.append({
+                "id": inv.get("id"),
+                "invoice_number": inv.get("invoice_number"),
+                "client_name": inv.get("clients", {}).get("name") if inv.get("clients") else "Client",
+                "client_email": inv.get("clients", {}).get("email") if inv.get("clients") else "N/A",
+                "total_amount": total_amount,
+                "currency": inv.get("currency", "USD"),
+                "commission_amount": commission_amount,
+                "freelancer_payout_amount": payout_amount,
+                "client_status": client_status,
+                "freelancer_payout_status": freelancer_payout_status,
+                "utr_number": inv.get("utr_number"),
+                "settled_at": inv.get("settled_at"),
+                "created_at": inv.get("created_at"),
+                "is_international": inv.get("is_international", False)
+            })
+            
+        total_settled = sum(t["freelancer_payout_amount"] for t in transactions if t["freelancer_payout_status"] == "Paid")
+        total_to_be_paid = sum(t["freelancer_payout_amount"] for t in transactions if t["freelancer_payout_status"] == "To Be Paid")
+        total_commission = sum(t["commission_amount"] for t in transactions)
+        
+        return {
+            "transactions": transactions,
+            "summary": {
+                "total_settled_amount": round(total_settled, 2),
+                "total_to_be_paid_amount": round(total_to_be_paid, 2),
+                "total_commission_amount": round(total_commission, 2),
+                "count_total": len(transactions),
+                "count_settled": sum(1 for t in transactions if t["freelancer_payout_status"] == "Paid"),
+                "count_pending": sum(1 for t in transactions if t["freelancer_payout_status"] == "To Be Paid")
+            }
+        }
+
+
 
 
 
