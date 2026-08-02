@@ -63,41 +63,85 @@ const Expenses = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      if (editingExpense) { await api.put('/api/expenses/' + editingExpense.id, formData); alert('Updated!'); }
-      else { await api.post('/api/expenses', formData); alert('Created!'); }
-      setShowModal(false); setEditingExpense(null); resetForm(); fetchExpenses(); fetchSummary();
-    } catch (error) { alert(error.response?.data?.detail || 'Failed'); }
+      const payload = {
+        ...formData,
+        amount: parseFloat(formData.amount),
+        tax_amount: parseFloat(formData.tax_amount || 0),
+        tags: formData.tags.filter(t => t.trim() !== '')
+      };
+      if (editingExpense) { 
+        await api.put('/api/expenses/' + editingExpense.id, payload); 
+        alert('Expense updated successfully!'); 
+      } else { 
+        await api.post('/api/expenses', payload); 
+        alert('Expense created successfully!'); 
+      }
+      setShowModal(false); 
+      setEditingExpense(null); 
+      resetForm(); 
+      fetchExpenses(); 
+      fetchAnalytics(); 
+    } catch (error) { 
+      alert(error.response?.data?.detail || 'Failed to save expense'); 
+    }
   };
 
   const handleEdit = (expense) => {
     setEditingExpense(expense);
     setFormData({
-      category: expense.category || '', subcategory: expense.subcategory || '', amount: expense.amount || '',
-      currency: expense.currency || 'USD', description: expense.description || '',
+      category_id: expense.category_id || '', 
+      amount: expense.amount || '',
+      currency: expense.currency || 'USD', 
+      description: expense.description || '',
       expense_date: expense.expense_date ? expense.expense_date.split('T')[0] : '',
-      payment_method: expense.payment_method || '', vendor_name: expense.vendor_name || '',
-      tax_amount: expense.tax_amount || 0, tax_rate: expense.tax_rate || 0,
+      payment_method: expense.payment_method || 'Other', 
+      vendor_name: expense.vendor_name || '',
+      invoice_number: expense.invoice_number || '',
+      tax_amount: expense.tax_amount || 0,
       is_tax_deductible: expense.is_tax_deductible !== undefined ? expense.is_tax_deductible : true,
-      notes: expense.notes || '', status: expense.status || 'completed', receipt_url: expense.receipt_url || ''
+      notes: expense.notes || '', 
+      status: expense.status || 'completed', 
+      receipt_url: expense.receipt_url || '',
+      tags: expense.tags || []
     });
     setShowModal(true);
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete?')) return;
-    try { await api.delete('/api/expenses/' + id); alert('Deleted!'); fetchExpenses(); fetchSummary(); }
-    catch (error) { alert('Failed'); }
+    if (!window.confirm('Are you sure you want to delete this expense?')) return;
+    try { 
+      await api.delete('/api/expenses/' + id); 
+      alert('Expense deleted successfully!'); 
+      fetchExpenses(); 
+      fetchAnalytics(); 
+    } catch (error) { 
+      alert('Failed to delete expense'); 
+    }
   };
 
   const resetForm = () => {
-    setFormData({ category: '', subcategory: '', amount: '', currency: 'USD', description: '',
-      expense_date: new Date().toISOString().split('T')[0], payment_method: '', vendor_name: '',
-      tax_amount: 0, tax_rate: 0, is_tax_deductible: true, notes: '', status: 'completed', receipt_url: '' });
+    setFormData({ 
+      category_id: '', 
+      amount: '', 
+      currency: 'USD', 
+      description: '',
+      expense_date: new Date().toISOString().split('T')[0], 
+      payment_method: 'Other', 
+      vendor_name: '',
+      invoice_number: '',
+      tax_amount: 0, 
+      is_tax_deductible: true, 
+      notes: '', 
+      status: 'completed', 
+      receipt_url: '',
+      tags: []
+    });
     setEditingExpense(null);
   };
 
   const openNewModal = () => { resetForm(); setShowModal(true); };
-  const getCategoryColor = (category) => { const cat = categories.find(c => c.name === category); return cat && cat.color_code ? cat.color_code : '#6B7280'; };
+  
+  const getCategoryById = (id) => categories.find(c => c.id === id);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-6">
