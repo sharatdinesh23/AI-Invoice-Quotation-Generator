@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse, RedirectResponse
 import httpx
 import io
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from cryptography.fernet import Fernet
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
