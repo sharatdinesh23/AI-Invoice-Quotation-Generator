@@ -3182,111 +3182,99 @@ async def get_settled_transactions(auth_data: dict = Depends(get_current_user)):
 # EXPENSE TRACKING APIs
 # ============================================
 
+def get_supabase_headers():
+    return {
+        "apikey": SUPABSE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Accept-Profile": "freelancing_demo",
+        "Content-Profile": "freelancing_demo",
+        "Prefer": "return=representation"
+    }
+
 @app.get("/api/expenses/categories")
-async def get_expense_categories(current_user: dict = Depends(verify_token)):
+async def get_expense_categories(auth_data: dict = Depends(get_current_user)):
     """Get all expense categories for the user including global defaults"""
-    try:
-        user_id = current_user.get('user_id')
-        
-        result = supabase.from_('expense_categories')\
-            .select('*')\
-            .or_(f'user_id.eq.{user_id},user_id.is.null')\
-            .order('name')\
-            .execute()
-        
-        return {"categories": result.data or []}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/expense_categories?or=(user_id.eq.{user_id},user_id.is.null)&order=name.asc",
+            headers=headers
+        )
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        return {"categories": res.json() if res.json() else []}
 
 
 @app.post("/api/expenses/categories")
-async def create_expense_category(category: ExpenseCategoryCreate, current_user: dict = Depends(verify_token)):
+async def create_expense_category(category: ExpenseCategoryCreate, auth_data: dict = Depends(get_current_user)):
     """Create a custom expense category"""
-    try:
-        user_id = current_user.get('user_id')
-        
-        data = {
-            "user_id": user_id,
-            "name": category.name,
-            "description": category.description,
-            "color": category.color,
-            "is_default": False
-        }
-        
-        result = supabase.table('expense_categories').insert(data).execute()
-        return {"category": result.data[0]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    user_id = auth_data["user"].id
+    data = {
+        "user_id": user_id,
+        "name": category.name,
+        "description": category.description,
+        "color": category.color,
+        "is_default": False
+    }
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.post(f"{SUPABASE_URL}/rest/v1/expense_categories", json=data, headers=headers)
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        result = res.json()
+        return {"category": result[0] if isinstance(result, list) and len(result) > 0 else result}
 
 
 @app.put("/api/expenses/categories/{category_id}")
-async def update_expense_category(category_id: str, category: ExpenseCategoryUpdate, current_user: dict = Depends(verify_token)):
+async def update_expense_category(category_id: str, category: ExpenseCategoryUpdate, auth_data: dict = Depends(get_current_user)):
     """Update an expense category"""
-    try:
-        user_id = current_user.get('user_id')
-        
-        # Verify ownership
-        existing = supabase.from_('expense_categories')\
-            .select('user_id, is_default')\
-            .eq('id', category_id)\
-            .execute()
-        
-        if not existing.data:
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        existing_res = await client.get(f"{SUPABASE_URL}/rest/v1/expense_categories?id=eq.{category_id}", headers=headers)
+        existing = existing_res.json() if existing_res.json() else []
+        if not existing:
             raise HTTPException(status_code=404, detail="Category not found")
         
-        if existing.data[0].get('is_default') and existing.data[0].get('user_id') is None:
+        cat_item = existing[0]
+        if cat_item.get('is_default') and cat_item.get('user_id') is None:
             raise HTTPException(status_code=403, detail="Cannot modify default categories")
-        
-        if existing.data[0].get('user_id') != user_id:
+        if cat_item.get('user_id') != user_id:
             raise HTTPException(status_code=403, detail="Not authorized to update this category")
         
         update_data = {}
-        if category.name is not None:
-            update_data['name'] = category.name
-        if category.description is not None:
-            update_data['description'] = category.description
-        if category.color is not None:
-            update_data['color'] = category.color
+        if category.name is not None: update_data['name'] = category.name
+        if category.description is not None: update_data['description'] = category.description
+        if category.color is not None: update_data['color'] = category.color
         
-        result = supabase.table('expense_categories')\
-            .update(update_data)\
-            .eq('id', category_id)\
-            .execute()
-        
-        return {"category": result.data[0]}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        res = await client.patch(f"{SUPABASE_URL}/rest/v1/expense_categories?id=eq.{category_id}", json=update_data, headers=headers)
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        result = res.json()
+        return {"category": result[0] if isinstance(result, list) and len(result) > 0 else result}
 
 
 @app.delete("/api/expenses/categories/{category_id}")
-async def delete_expense_category(category_id: str, current_user: dict = Depends(verify_token)):
-    """Delete an expense category (cannot delete default categories)"""
-    try:
-        user_id = current_user.get('user_id')
-        
-        # Verify ownership and check if default
-        existing = supabase.from_('expense_categories')\
-            .select('user_id, is_default')\
-            .eq('id', category_id)\
-            .execute()
-        
-        if not existing.data:
+async def delete_expense_category(category_id: str, auth_data: dict = Depends(get_current_user)):
+    """Delete an expense category"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        existing_res = await client.get(f"{SUPABASE_URL}/rest/v1/expense_categories?id=eq.{category_id}", headers=headers)
+        existing = existing_res.json() if existing_res.json() else []
+        if not existing:
             raise HTTPException(status_code=404, detail="Category not found")
         
-        if existing.data[0].get('is_default'):
+        cat_item = existing[0]
+        if cat_item.get('is_default'):
             raise HTTPException(status_code=403, detail="Cannot delete default categories")
-        
-        if existing.data[0].get('user_id') != user_id:
+        if cat_item.get('user_id') != user_id:
             raise HTTPException(status_code=403, detail="Not authorized to delete this category")
         
-        supabase.table('expense_categories').delete().eq('id', category_id).execute()
+        await client.delete(f"{SUPABASE_URL}/rest/v1/expense_categories?id=eq.{category_id}", headers=headers)
         return {"message": "Category deleted successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/expenses")
@@ -3297,176 +3285,128 @@ async def get_expenses(
     end_date: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    current_user: dict = Depends(verify_token)
+    auth_data: dict = Depends(get_current_user)
 ):
     """Get all expenses with optional filters"""
-    try:
-        user_id = current_user.get('user_id')
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        url = f"{SUPABASE_URL}/rest/v1/expenses?user_id=eq.{user_id}&select=*,expense_categories(name,color)"
         
-        query = supabase.from_('expenses').select('*, expense_categories(name, color)').eq('user_id', user_id)
+        if category: url += f"&category=eq.{category}"
+        if status: url += f"&status=eq.{status}"
+        if start_date: url += f"&expense_date=gte.{start_date}"
+        if end_date: url += f"&expense_date=lte.{end_date}"
         
-        if category:
-            query = query.eq('category', category)
+        url += f"&order=expense_date.desc&offset={offset}&limit={limit}"
         
-        if status:
-            query = query.eq('status', status)
+        headers_count = {**headers, "Prefer": "count=exact"}
+        res = await client.get(url, headers=headers_count)
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
         
-        if start_date:
-            query = query.gte('expense_date', start_date)
-        
-        if end_date:
-            query = query.lte('expense_date', end_date)
-        
-        query = query.order('expense_date', desc=True).range(offset, offset + limit - 1)
-        
-        result = query.execute()
-        
-        # Get total count
-        count_query = supabase.from_('expenses').select('*', count='exact').eq('user_id', user_id)
-        if category:
-            count_query = count_query.eq('category', category)
-        if status:
-            count_query = count_query.eq('status', status)
-        if start_date:
-            count_query = count_query.gte('expense_date', start_date)
-        if end_date:
-            count_query = count_query.lte('expense_date', end_date)
-        
-        count_result = count_query.execute()
-        total_count = count_result.count if hasattr(count_result, 'count') else len(result.data or [])
+        content_range = res.headers.get("content-range", "")
+        total_count = int(content_range.split("/")[-1]) if "/" in content_range and content_range.split("/")[-1].isdigit() else len(res.json() or [])
         
         return {
-            "expenses": result.data or [],
+            "expenses": res.json() if res.json() else [],
             "total": total_count,
             "limit": limit,
             "offset": offset
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/expenses")
-async def create_expense(expense: ExpenseCreate, current_user: dict = Depends(verify_token)):
+async def create_expense(expense: ExpenseCreate, auth_data: dict = Depends(get_current_user)):
     """Create a new expense"""
-    try:
-        user_id = current_user.get('user_id')
-        
-        data = expense.model_dump()
-        data['user_id'] = user_id
-        
-        result = supabase.table('expenses').insert(data).execute()
-        return {"expense": result.data[0]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    user_id = auth_data["user"].id
+    data = expense.model_dump()
+    data['user_id'] = user_id
+    
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.post(f"{SUPABASE_URL}/rest/v1/expenses", json=data, headers=headers)
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        result = res.json()
+        return {"expense": result[0] if isinstance(result, list) and len(result) > 0 else result}
 
 
 @app.put("/api/expenses/{expense_id}")
-async def update_expense(expense_id: str, expense: ExpenseUpdate, current_user: dict = Depends(verify_token)):
+async def update_expense(expense_id: str, expense: ExpenseUpdate, auth_data: dict = Depends(get_current_user)):
     """Update an expense"""
-    try:
-        user_id = current_user.get('user_id')
-        
-        # Verify ownership
-        existing = supabase.from_('expenses')\
-            .select('user_id')\
-            .eq('id', expense_id)\
-            .execute()
-        
-        if not existing.data:
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        existing_res = await client.get(f"{SUPABASE_URL}/rest/v1/expenses?id=eq.{expense_id}", headers=headers)
+        existing = existing_res.json() if existing_res.json() else []
+        if not existing:
             raise HTTPException(status_code=404, detail="Expense not found")
-        
-        if existing.data[0].get('user_id') != user_id:
+        if existing[0].get('user_id') != user_id:
             raise HTTPException(status_code=403, detail="Not authorized to update this expense")
         
         update_data = {k: v for k, v in expense.model_dump().items() if v is not None}
-        
-        result = supabase.table('expenses')\
-            .update(update_data)\
-            .eq('id', expense_id)\
-            .execute()
-        
-        return {"expense": result.data[0]}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        res = await client.patch(f"{SUPABASE_URL}/rest/v1/expenses?id=eq.{expense_id}", json=update_data, headers=headers)
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        result = res.json()
+        return {"expense": result[0] if isinstance(result, list) and len(result) > 0 else result}
 
 
 @app.delete("/api/expenses/{expense_id}")
-async def delete_expense(expense_id: str, current_user: dict = Depends(verify_token)):
+async def delete_expense(expense_id: str, auth_data: dict = Depends(get_current_user)):
     """Delete an expense"""
-    try:
-        user_id = current_user.get('user_id')
-        
-        # Verify ownership
-        existing = supabase.from_('expenses')\
-            .select('user_id')\
-            .eq('id', expense_id)\
-            .execute()
-        
-        if not existing.data:
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        existing_res = await client.get(f"{SUPABASE_URL}/rest/v1/expenses?id=eq.{expense_id}", headers=headers)
+        existing = existing_res.json() if existing_res.json() else []
+        if not existing:
             raise HTTPException(status_code=404, detail="Expense not found")
-        
-        if existing.data[0].get('user_id') != user_id:
+        if existing[0].get('user_id') != user_id:
             raise HTTPException(status_code=403, detail="Not authorized to delete this expense")
         
-        supabase.table('expenses').delete().eq('id', expense_id).execute()
+        await client.delete(f"{SUPABASE_URL}/rest/v1/expenses?id=eq.{expense_id}", headers=headers)
         return {"message": "Expense deleted successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/expenses/analytics")
-async def get_expense_analytics(
-    months: int = 6,
-    current_user: dict = Depends(verify_token)
-):
+async def get_expense_analytics(months: int = 6, auth_data: dict = Depends(get_current_user)):
     """Get expense analytics with category breakdown and monthly trends"""
-    try:
-        user_id = current_user.get('user_id')
+    user_id = auth_data["user"].id
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=months*30)
+    
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/expenses?user_id=eq.{user_id}&expense_date=gte.{start_date.isoformat()}&expense_date=lte.{end_date.isoformat()}&select=category,amount,currency,expense_date,tax_amount,is_tax_deductible",
+            headers=headers
+        )
+        expenses = res.json() if res.json() and isinstance(res.json(), list) else []
         
-        # Calculate date range
-        end_date = datetime.now(timezone.utc).date()
-        start_date = end_date - timedelta(days=months*30)
-        
-        # Get expenses in range
-        result = supabase.from_('expenses')\
-            .select('category, amount, currency, expense_date, tax_amount, is_tax_deductible')\
-            .eq('user_id', user_id)\
-            .gte('expense_date', start_date.isoformat())\
-            .lte('expense_date', end_date.isoformat())\
-            .execute()
-        
-        expenses = result.data or []
-        
-        # Category breakdown
         category_breakdown = {}
         for exp in expenses:
-            cat = exp['category']
+            cat = exp.get('category', 'Uncategorized')
             if cat not in category_breakdown:
                 category_breakdown[cat] = {'total': 0, 'count': 0, 'tax_deductible': 0}
-            category_breakdown[cat]['total'] += float(exp['amount'])
+            amt = float(exp.get('amount', 0))
+            category_breakdown[cat]['total'] += amt
             category_breakdown[cat]['count'] += 1
             if exp.get('is_tax_deductible'):
-                category_breakdown[cat]['tax_deductible'] += float(exp['amount'])
+                category_breakdown[cat]['tax_deductible'] += amt
         
-        # Monthly trend
         monthly_trend = {}
         for exp in expenses:
-            month = exp['expense_date'][:7]  # YYYY-MM
-            if month not in monthly_trend:
-                monthly_trend[month] = 0
-            monthly_trend[month] += float(exp['amount'])
+            month = exp.get('expense_date', '')[:7]
+            if month:
+                monthly_trend[month] = monthly_trend.get(month, 0) + float(exp.get('amount', 0))
         
-        # Sort monthly trend
         sorted_months = sorted(monthly_trend.keys())
-        monthly_data = [{'month': m, 'amount': monthly_trend[m]} for m in sorted_months]
+        monthly_data = [{'month': m, 'amount': round(monthly_trend[m], 2)} for m in sorted_months]
         
-        # Totals
-        total_expenses = sum(float(e['amount']) for e in expenses)
-        total_tax_deductible = sum(float(e['amount']) for e in expenses if e.get('is_tax_deductible'))
+        total_expenses = sum(float(e.get('amount', 0)) for e in expenses)
+        total_tax_deductible = sum(float(e.get('amount', 0)) for e in expenses if e.get('is_tax_deductible'))
         total_tax = sum(float(e.get('tax_amount', 0)) for e in expenses)
         
         return {
@@ -3484,59 +3424,44 @@ async def get_expense_analytics(
                 "months": months
             }
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/expenses/stats")
-async def get_expense_stats(current_user: dict = Depends(verify_token)):
+async def get_expense_stats(auth_data: dict = Depends(get_current_user)):
     """Get quick expense statistics for dashboard"""
-    try:
-        user_id = current_user.get('user_id')
-        now = datetime.now(timezone.utc)
+    user_id = auth_data["user"].id
+    now = datetime.now(timezone.utc)
+    current_month_start = now.replace(day=1).strftime('%Y-%m-%d')
+    
+    if now.month == 1:
+        prev_month_start = f"{now.year-1}-12-01"
+        prev_month_end = f"{now.year-1}-12-31"
+    else:
+        prev_month_start = f"{now.year}-{now.month-1:02d}-01"
+        last_day = (now.replace(day=1) - timedelta(days=1)).day
+        prev_month_end = f"{now.year}-{now.month-1:02d}-{last_day:02d}"
+        
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
         
         # Current month
-        current_month_start = now.replace(day=1).strftime('%Y-%m-%d')
-        current_month_result = supabase.from_('expenses')\
-            .select('amount')\
-            .eq('user_id', user_id)\
-            .gte('expense_date', current_month_start)\
-            .execute()
-        current_month_total = sum(float(e['amount']) for e in (current_month_result.data or []))
+        res_curr = await client.get(f"{SUPABASE_URL}/rest/v1/expenses?user_id=eq.{user_id}&expense_date=gte.{current_month_start}&select=amount,tax_amount,is_tax_deductible", headers=headers)
+        curr_exps = res_curr.json() if res_curr.json() and isinstance(res_curr.json(), list) else []
+        current_month_total = sum(float(e.get('amount', 0)) for e in curr_exps)
         
-        # Previous month
-        if now.month == 1:
-            prev_month_start = f"{now.year-1}-12-01"
-            prev_month_end = f"{now.year-1}-12-31"
-        else:
-            prev_month_start = f"{now.year}-{now.month-1:02d}-01"
-            last_day = (now.replace(day=1) - timedelta(days=1)).day
-            prev_month_end = f"{now.year}-{now.month-1:02d}-{last_day:02d}"
+        # Prev month
+        res_prev = await client.get(f"{SUPABASE_URL}/rest/v1/expenses?user_id=eq.{user_id}&expense_date=gte.{prev_month_start}&expense_date=lte.{prev_month_end}&select=amount", headers=headers)
+        prev_exps = res_prev.json() if res_prev.json() and isinstance(res_prev.json(), list) else []
+        prev_month_total = sum(float(e.get('amount', 0)) for e in prev_exps)
         
-        prev_month_result = supabase.from_('expenses')\
-            .select('amount')\
-            .eq('user_id', user_id)\
-            .gte('expense_date', prev_month_start)\
-            .lte('expense_date', prev_month_end)\
-            .execute()
-        prev_month_total = sum(float(e['amount']) for e in (prev_month_result.data or []))
+        tax_deductible_total = sum(float(e.get('amount', 0)) for e in curr_exps if e.get('is_tax_deductible'))
+        tax_paid_total = sum(float(e.get('tax_amount', 0)) for e in curr_exps if e.get('is_tax_deductible'))
         
-        # Tax deductible this month
-        tax_deductible_result = supabase.from_('expenses')\
-            .select('amount, tax_amount')\
-            .eq('user_id', user_id)\
-            .gte('expense_date', current_month_start)\
-            .eq('is_tax_deductible', True)\
-            .execute()
-        tax_deductible_total = sum(float(e['amount']) for e in (tax_deductible_result.data or []))
-        tax_paid_total = sum(float(e.get('tax_amount', 0)) for e in (tax_deductible_result.data or []))
-        
-        # Calculate month-over-month change
         if prev_month_total > 0:
             mom_change = ((current_month_total - prev_month_total) / prev_month_total) * 100
         else:
             mom_change = 100 if current_month_total > 0 else 0
-        
+            
         return {
             "current_month": round(current_month_total, 2),
             "previous_month": round(prev_month_total, 2),
@@ -3544,73 +3469,49 @@ async def get_expense_stats(current_user: dict = Depends(verify_token)):
             "tax_deductible_this_month": round(tax_deductible_total, 2),
             "tax_paid_this_month": round(tax_paid_total, 2)
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/profit-loss")
 async def get_profit_loss_statement(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    current_user: dict = Depends(verify_token)
+    auth_data: dict = Depends(get_current_user)
 ):
     """Get profit and loss statement combining revenue and expenses"""
-    try:
-        user_id = current_user.get('user_id')
+    user_id = auth_data["user"].id
+    if not end_date: end_date = datetime.now(timezone.utc).date().isoformat()
+    if not start_date: start_date = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
+    
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
         
-        # Default to last 30 days if no dates provided
-        if not end_date:
-            end_date = datetime.now(timezone.utc).date().isoformat()
-        if not start_date:
-            start_date = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
+        # Revenue from paid/completed invoices
+        res_rev = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user_id}&status=in.(Paid,Completed)&select=total,currency,status", headers=headers)
+        rev_invoices = res_rev.json() if res_rev.json() and isinstance(res_rev.json(), list) else []
+        total_revenue = sum(float(inv.get('total', 0)) for inv in rev_invoices)
         
-        # Get paid invoices (revenue)
-        revenue_result = supabase.from_('invoices')\
-            .select('amount, currency, paid_at, payment_method')\
-            .eq('user_id', user_id)\
-            .eq('status', 'Paid')\
-            .gte('paid_at', start_date)\
-            .lte('paid_at', end_date)\
-            .execute()
+        # Expenses
+        res_exp = await client.get(f"{SUPABASE_URL}/rest/v1/expenses?user_id=eq.{user_id}&expense_date=gte.{start_date}&expense_date=lte.{end_date}&select=amount,category,is_tax_deductible", headers=headers)
+        expenses = res_exp.json() if res_exp.json() and isinstance(res_exp.json(), list) else []
         
-        total_revenue = sum(float(inv['amount']) for inv in (revenue_result.data or []))
+        total_expenses = sum(float(e.get('amount', 0)) for e in expenses)
+        tax_deductible_expenses = sum(float(e.get('amount', 0)) for e in expenses if e.get('is_tax_deductible'))
         
-        # Get expenses
-        expense_result = supabase.from_('expenses')\
-            .select('amount, currency, category, is_tax_deductible')\
-            .eq('user_id', user_id)\
-            .gte('expense_date', start_date)\
-            .lte('expense_date', end_date)\
-            .execute()
-        
-        total_expenses = sum(float(exp['amount']) for exp in (expense_result.data or []))
-        tax_deductible_expenses = sum(float(exp['amount']) for exp in (expense_result.data or []) if exp.get('is_tax_deductible'))
-        
-        # Calculate profit
         gross_profit = total_revenue - total_expenses
         profit_margin = (gross_profit / total_revenue * 100) if total_revenue > 0 else 0
         
-        # Expense breakdown by category
         category_breakdown = {}
-        for exp in (expense_result.data or []):
-            cat = exp['category']
-            if cat not in category_breakdown:
-                category_breakdown[cat] = 0
-            category_breakdown[cat] += float(exp['amount'])
-        
+        for exp in expenses:
+            cat = exp.get('category', 'Uncategorized')
+            category_breakdown[cat] = category_breakdown.get(cat, 0) + float(exp.get('amount', 0))
+            
         return {
-            "period": {
-                "start_date": start_date,
-                "end_date": end_date
-            },
-            "revenue": {
-                "total": round(total_revenue, 2),
-                "count": len(revenue_result.data or [])
-            },
+            "period": {"start_date": start_date, "end_date": end_date},
+            "revenue": {"total": round(total_revenue, 2), "count": len(rev_invoices)},
             "expenses": {
                 "total": round(total_expenses, 2),
                 "tax_deductible": round(tax_deductible_expenses, 2),
-                "count": len(expense_result.data or []),
+                "count": len(expenses),
                 "by_category": category_breakdown
             },
             "profit": {
@@ -3618,8 +3519,6 @@ async def get_profit_loss_statement(
                 "profit_margin_percent": round(profit_margin, 2)
             }
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 
