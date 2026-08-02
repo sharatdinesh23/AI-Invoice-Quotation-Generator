@@ -2,10 +2,13 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../api'
+import CurrencyConverter from '../components/CurrencyConverter'
 
 export default function Invoices() {
   const navigate = useNavigate()
   const [invoices, setInvoices] = useState([])
+  const [showConverter, setShowConverter] = useState(false)
+  const [settlingId, setSettlingId] = useState(null)
 
   useEffect(() => { 
     fetchInvoices() 
@@ -24,17 +27,83 @@ export default function Invoices() {
     }
   }
 
-    const getStatusColor = (status) => {
-    switch(status) {
-      case 'Paid': return 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
-      case 'Sent': return 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
-      case 'Overdue': return 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
-      case 'Void': return 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400 line-through' // <-- Added Void style
-      default: return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+  const handleSettlePayout = async (inv) => {
+    const customUtr = window.prompt(
+      `Settle payout for Invoice ${inv.invoice_number}.\nEnter UTR number (or leave blank to auto-generate):`,
+      inv.utr_number || ''
+    )
+    if (customUtr === null) return; // User cancelled
+
+    setSettlingId(inv.id)
+    try {
+      const res = await apiFetch(`/api/invoices/${inv.id}/settle`, {
+        method: 'POST',
+        body: JSON.stringify({ utr_number: customUtr.trim() || undefined })
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        alert(`✅ Invoice ${inv.invoice_number} settled successfully!\nStatus: Completed\nUTR: ${data.utr_number}`)
+        fetchInvoices()
+      } else {
+        const err = await res.json()
+        alert(`Settlement failed: ${err.detail || 'Unknown error'}`)
+      }
+    } catch (error) {
+      console.error(error)
+      alert('Error connecting to settlement server.')
+    } finally {
+      setSettlingId(null)
     }
   }
 
-  // This is the single, robust function to handle sending
+  const getStatusBadge = (inv) => {
+    const status = inv.status
+    const utr = inv.utr_number
+
+    switch(status) {
+      case 'Completed':
+        return (
+          <div className="flex flex-col gap-1 items-start">
+            <div className="flex gap-1 items-center flex-wrap">
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-green-100 text-green-800 border border-green-300">
+                Client: Paid
+              </span>
+              <span className="px-2 py-0.5 rounded text-[11px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                Payout: Paid
+              </span>
+            </div>
+            {utr && (
+              <span className="text-[10px] font-mono text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-200">
+                UTR: {utr}
+              </span>
+            )}
+          </div>
+        )
+      case 'Paid':
+        return (
+          <div className="flex flex-col gap-1 items-start">
+            <div className="flex gap-1 items-center flex-wrap">
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-green-100 text-green-800 border border-green-300">
+                Client: Paid
+              </span>
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                Payout: To Be Paid
+              </span>
+            </div>
+          </div>
+        )
+      case 'Sent':
+        return <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">Sent</span>
+      case 'Overdue':
+        return <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300">Overdue</span>
+      case 'Void':
+        return <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-gray-200 text-gray-600 line-through">Void</span>
+      default:
+        return <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">{status}</span>
+    }
+  }
+
   const handleSendInvoice = async (id, invoiceNumber, clientEmail) => {
     if (!window.confirm(`Send invoice ${invoiceNumber} to ${clientEmail} via your connected Gmail?`)) return;
 
@@ -49,7 +118,7 @@ export default function Invoices() {
 
       if (res.ok) {
         alert('✅ Invoice sent successfully via Gmail!');
-        fetchInvoices(); // Refresh to show updated "Sent" status
+        fetchInvoices();
       } else {
         const err = await res.json();
         alert(`Failed to send: ${err.detail || 'Unknown error'}`);
@@ -62,12 +131,29 @@ export default function Invoices() {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex justify-between items-center mb-6 flex-wrap gap-3">
         <h2 className="text-2xl font-bold text-gray-800">Invoices</h2>
-        <button onClick={() => navigate('/invoices/new')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm">
-          + Create Invoice
-        </button>
+        <div className="flex gap-3">
+          <button 
+            onClick={() => setShowConverter(!showConverter)} 
+            className="px-4 py-2 bg-indigo-50 text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300 border border-indigo-200 rounded-lg hover:bg-indigo-100 font-medium text-sm flex items-center gap-1.5"
+          >
+            💱 Currency Converter
+          </button>
+          <button 
+            onClick={() => navigate('/invoices/new')} 
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm shadow-sm"
+          >
+            + Create Invoice
+          </button>
+        </div>
       </div>
+
+      {showConverter && (
+        <div className="mb-6">
+          <CurrencyConverter onClose={() => setShowConverter(false)} />
+        </div>
+      )}
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         <table className="w-full text-left">
@@ -76,7 +162,7 @@ export default function Invoices() {
               <th className="p-4 text-sm font-semibold text-gray-600">Invoice #</th>
               <th className="p-4 text-sm font-semibold text-gray-600">Client</th>
               <th className="p-4 text-sm font-semibold text-gray-600">Total</th>
-              <th className="p-4 text-sm font-semibold text-gray-600">Status</th>
+              <th className="p-4 text-sm font-semibold text-gray-600">Status & Settlement</th>
               <th className="p-4 text-sm font-semibold text-gray-600 text-right">Actions</th>
             </tr>
           </thead>
@@ -86,15 +172,28 @@ export default function Invoices() {
             ) : (
               invoices.map(inv => (
                 <tr key={inv.id} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="p-4 font-medium text-gray-800">{inv.invoice_number}</td>
+                  <td className="p-4 font-medium text-gray-800">
+                    {inv.invoice_number}
+                    {inv.is_international && (
+                      <span className="ml-2 text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-bold">INTL</span>
+                    )}
+                  </td>
                   <td className="p-4 text-gray-600">{inv.clients?.name || 'Unknown'}</td>
                   <td className="p-4 font-semibold text-gray-800">{inv.currency || 'USD'} {parseFloat(inv.total).toFixed(2)}</td>
                   <td className="p-4">
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(inv.status)}`}>
-                      {inv.status}
-                    </span>
+                    {getStatusBadge(inv)}
                   </td>
-                  <td className="p-4 text-right space-x-3">
+                  <td className="p-4 text-right space-x-2.5">
+                    {inv.status === 'Paid' && (
+                      <button 
+                        onClick={() => handleSettlePayout(inv)} 
+                        disabled={settlingId === inv.id}
+                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded shadow-sm transition"
+                        title="Mark money settled to freelancer and generate UTR"
+                      >
+                        {settlingId === inv.id ? 'Settling...' : '🏦 Settle [UTR]'}
+                      </button>
+                    )}
                     <button onClick={() => navigate(`/invoices/${inv.id}/view`)} className="text-gray-600 hover:text-gray-800 text-sm font-medium">
                       View
                     </button>

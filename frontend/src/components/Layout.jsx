@@ -177,6 +177,9 @@ export default function Layout() {
           <Link to="/quotations" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/quotations')}`}>
             Quotations
           </Link>
+          <Link to="/transactions" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/transactions')}`}>
+            💸 Transactions
+          </Link>
           <Link to="/payment-settings" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/payment-settings')}`}>
             💳 Payment Settings
           </Link>

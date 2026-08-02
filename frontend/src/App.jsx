@@ -13,6 +13,7 @@ import CreateInvoice from './pages/CreateInvoice'
 import ViewInvoice from './pages/ViewInvoice'
 import Settings from './pages/Settings'
 import PaymentSettings from './pages/PaymentSettings'
+import Transactions from './pages/Transactions'
 import RecurringInvoices from './pages/RecurringInvoices'
 import CreateRecurringInvoice from './pages/CreateRecurringInvoice'
 import Quotations from './pages/Quotations'
@@ -69,6 +70,7 @@ function App() {
             <Route path="/quotations/:id/edit" element={<CreateQuotation />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/payment-settings" element={<PaymentSettings />} />
+            <Route path="/transactions" element={<Transactions />} />
           </Route>
         )}
         
