@@ -4,7 +4,7 @@
 -- 1. Expense Categories Table
 CREATE TABLE IF NOT EXISTS freelancing_demo.expense_categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     name VARCHAR(100) NOT NULL,
     description TEXT,
     color VARCHAR(7) DEFAULT '#3B82F6', -- Hex color for UI
@@ -57,74 +57,45 @@ CREATE INDEX IF NOT EXISTS idx_expense_categories_user_id ON freelancing_demo.ex
 CREATE INDEX IF NOT EXISTS idx_recurring_expenses_user_id ON freelancing_demo.recurring_expenses(user_id);
 CREATE INDEX IF NOT EXISTS idx_recurring_expenses_next_due ON freelancing_demo.recurring_expenses(next_due_date);
 
--- Insert default expense categories
-INSERT INTO freelancing_demo.expense_categories (user_id, name, description, color, is_default)
-SELECT 
-    auth.uid(), -- This will be replaced by actual user_id during migration or use a trigger
-    category_name,
-    category_desc,
-    category_color,
-    TRUE
-FROM (
-    VALUES 
-        ('Software & Tools', 'Subscriptions for software, SaaS tools, etc.', '#3B82F6'),
-        ('Office Supplies', 'Physical office supplies and equipment.', '#10B981'),
-        ('Internet & Phone', 'Internet, phone bills, communication costs.', '#F59E0B'),
-        ('Marketing & Advertising', 'Ads, promotions, marketing campaigns.', '#EF4444'),
-        ('Professional Services', 'Legal, accounting, consulting fees.', '#8B5CF6'),
-        ('Travel & Transportation', 'Business travel, fuel, public transport.', '#EC4899'),
-        ('Education & Training', 'Courses, certifications, books.', '#14B8A6'),
-        ('Bank Fees & Charges', 'Transaction fees, bank charges.', '#6B7280'),
-        ('Taxes & Licenses', 'Business taxes, licenses, permits.', '#F97316'),
-        ('Insurance', 'Business insurance premiums.', '#06B6D4'),
-        ('Rent & Utilities', 'Office rent, electricity, water.', '#84CC16'),
-        ('Miscellaneous', 'Other business expenses.', '#A855F7')
-) AS defaults(category_name, category_desc, category_color);
+-- Note: Default categories are now global templates with user_id = NULL
+-- They are visible to all users via RLS policy but cannot be modified/deleted
+-- Users can create their own custom categories which will have their user_id set
 
--- Note: The above INSERT needs to be run per user or via a trigger/function
--- Alternative: Create a function to insert default categories for new users
-
--- Function to create default categories for a user
-CREATE OR REPLACE FUNCTION freelancing_demo.create_default_expense_categories(p_user_id UUID)
+-- Function to seed default expense categories (global templates)
+CREATE OR REPLACE FUNCTION freelancing_demo.seed_default_expense_categories()
 RETURNS VOID AS $$
 BEGIN
+    -- Insert default categories as global templates (user_id = NULL)
     INSERT INTO freelancing_demo.expense_categories (user_id, name, description, color, is_default)
-    SELECT 
-        p_user_id,
-        category_name,
-        category_desc,
-        category_color,
-        TRUE
-    FROM (
-        VALUES 
-            ('Software & Tools', 'Subscriptions for software, SaaS tools, etc.', '#3B82F6'),
-            ('Office Supplies', 'Physical office supplies and equipment.', '#10B981'),
-            ('Internet & Phone', 'Internet, phone bills, communication costs.', '#F59E0B'),
-            ('Marketing & Advertising', 'Ads, promotions, marketing campaigns.', '#EF4444'),
-            ('Professional Services', 'Legal, accounting, consulting fees.', '#8B5CF6'),
-            ('Travel & Transportation', 'Business travel, fuel, public transport.', '#EC4899'),
-            ('Education & Training', 'Courses, certifications, books.', '#14B8A6'),
-            ('Bank Fees & Charges', 'Transaction fees, bank charges.', '#6B7280'),
-            ('Taxes & Licenses', 'Business taxes, licenses, permits.', '#F97316'),
-            ('Insurance', 'Business insurance premiums.', '#06B6D4'),
-            ('Rent & Utilities', 'Office rent, electricity, water.', '#84CC16'),
-            ('Miscellaneous', 'Other business expenses.', '#A855F7')
-    ) AS defaults(category_name, category_desc, category_color)
-    WHERE NOT EXISTS (
-        SELECT 1 FROM freelancing_demo.expense_categories WHERE user_id = p_user_id
-    );
+    VALUES 
+        (NULL, 'Software & Tools', 'Subscriptions for software, SaaS tools, etc.', '#3B82F6', true),
+        (NULL, 'Office Supplies', 'Physical office supplies and equipment.', '#10B981', true),
+        (NULL, 'Internet & Phone', 'Internet, phone bills, communication costs.', '#F59E0B', true),
+        (NULL, 'Marketing & Advertising', 'Ads, promotions, marketing campaigns.', '#EF4444', true),
+        (NULL, 'Professional Services', 'Legal, accounting, consulting fees.', '#8B5CF6', true),
+        (NULL, 'Travel & Transportation', 'Business travel, fuel, public transport.', '#EC4899', true),
+        (NULL, 'Education & Training', 'Courses, certifications, books.', '#14B8A6', true),
+        (NULL, 'Bank Fees & Charges', 'Transaction fees, bank charges.', '#6B7280', true),
+        (NULL, 'Taxes & Licenses', 'Business taxes, licenses, permits.', '#F97316', true),
+        (NULL, 'Insurance', 'Business insurance premiums.', '#06B6D4', true),
+        (NULL, 'Rent & Utilities', 'Office rent, electricity, water.', '#84CC16', true),
+        (NULL, 'Miscellaneous', 'Other business expenses.', '#A855F7', true)
+    ON CONFLICT DO NOTHING;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Execute the seeding
+SELECT freelancing_demo.seed_default_expense_categories();
 
 -- Row Level Security (RLS) Policies
 ALTER TABLE freelancing_demo.expense_categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE freelancing_demo.expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE freelancing_demo.recurring_expenses ENABLE ROW LEVEL SECURITY;
 
--- Policies for expense_categories
-CREATE POLICY "Users can view their own expense categories"
+-- Policies for expense_categories (allow viewing global defaults where user_id IS NULL)
+CREATE POLICY "Users can view their own and global expense categories"
 ON freelancing_demo.expense_categories FOR SELECT
-USING (auth.uid() = user_id);
+USING (auth.uid() = user_id OR user_id IS NULL);
 
 CREATE POLICY "Users can insert their own expense categories"
 ON freelancing_demo.expense_categories FOR INSERT
