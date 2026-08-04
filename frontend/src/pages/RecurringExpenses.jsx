@@ -48,6 +48,18 @@ const RecurringExpenses = () => {
     }
   };
 
+  const handleToggleActive = async (ruleId, currentStatus) => {
+    try {
+      const newStatus = !currentStatus;
+      const res = await api.toggleRecurringExpenseRule(ruleId, newStatus);
+      if (res.ok) {
+        fetchRules();
+      }
+    } catch (err) {
+      alert('Failed to toggle rule status');
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!window.confirm('Are you sure you want to delete this recurring expense rule?')) return;
     try {
@@ -120,14 +132,15 @@ const RecurringExpenses = () => {
               <th className="px-6 py-3 text-xs uppercase">Frequency</th>
               <th className="px-6 py-3 text-xs uppercase">Amount</th>
               <th className="px-6 py-3 text-xs uppercase">Next Due Date</th>
+              <th className="px-6 py-3 text-xs uppercase">Status</th>
               <th className="px-6 py-3 text-right text-xs uppercase">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
             {loading ? (
-              <tr><td colSpan="6" className="p-8 text-center text-gray-500">Loading recurring rules...</td></tr>
+              <tr><td colSpan="7" className="p-8 text-center text-gray-500">Loading recurring rules...</td></tr>
             ) : rules.length === 0 ? (
-              <tr><td colSpan="6" className="p-8 text-center text-gray-500">No active recurring expense rules found. Click "New Recurring Rule" to create one!</td></tr>
+              <tr><td colSpan="7" className="p-8 text-center text-gray-500">No active recurring expense rules found. Click "New Recurring Rule" to create one!</td></tr>
             ) : (
               rules.map(rule => (
                 <tr key={rule.id} className="hover:bg-gray-50 dark:hover:bg-gray-750">
@@ -148,6 +161,18 @@ const RecurringExpenses = () => {
                   </td>
                   <td className="px-6 py-4 font-mono text-xs text-gray-700 dark:text-gray-300">
                     {rule.next_due_date}
+                  </td>
+                  <td className="px-6 py-4">
+                    <button
+                      onClick={() => handleToggleActive(rule.id, rule.is_active ?? true)}
+                      className={`px-2.5 py-1 rounded-full text-xs font-bold transition ${
+                        (rule.is_active ?? true)
+                          ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                          : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+                      }`}
+                    >
+                      {(rule.is_active ?? true) ? '● Active' : '○ Paused'}
+                    </button>
                   </td>
                   <td className="px-6 py-4 text-right">
                     <button onClick={() => handleDelete(rule.id)} className="text-red-600 hover:text-red-800 font-medium">Delete</button>
