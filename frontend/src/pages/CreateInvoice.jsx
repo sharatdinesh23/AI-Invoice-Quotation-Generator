@@ -1,17 +1,24 @@
 // frontend/src/pages/CreateInvoice.jsx
 import { useState, useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../api'
+import * as api from '../api'
 
 export default function CreateInvoice() {
   const navigate = useNavigate()
   const { id } = useParams()
+  const [searchParams] = useSearchParams()
   const isEditing = Boolean(id)
 
   const [clients, setClients] = useState([])
   const [products, setProducts] = useState([])
+  const [projects, setProjects] = useState([])
+  const [paymentReady, setPaymentReady] = useState(false)
+  const [commissionPct, setCommissionPct] = useState(2)
   
   const [clientId, setClientId] = useState('')
+  const [projectId, setProjectId] = useState(searchParams.get('project_id') || '')
+  const [paymentIntegrationEnabled, setPaymentIntegrationEnabled] = useState(false)
   const [invoiceNumber, setInvoiceNumber] = useState('')
   const [currency, setCurrency] = useState('USD')
   const [status, setStatus] = useState('Draft') // Fix #4: Status is now updatable
@@ -74,6 +81,17 @@ export default function CreateInvoice() {
         const dataP = await resP.json()
         setProducts(dataP.products || [])
 
+        const resProj = await api.getProjects()
+        const dataProj = await resProj.json()
+        setProjects(dataProj.projects || [])
+
+        const ctxRes = await api.getMeContext()
+        if (ctxRes.ok) {
+          const ctx = await ctxRes.json()
+          setPaymentReady(ctx.payment_ready)
+          setCommissionPct(ctx.commission_percentage || 2)
+        }
+
         // 2. Handle Edit Mode vs Create Mode
         if (isEditing) {
           const res = await apiFetch(`/api/invoices/${id}`)
@@ -87,6 +105,8 @@ export default function CreateInvoice() {
             setCurrency(inv.currency || 'USD')
             setStatus(inv.status || 'Draft')
             setDiscount(inv.discount || 0)
+            setProjectId(inv.project_id || '')
+            setPaymentIntegrationEnabled(Boolean(inv.payment_integration_enabled))
             
             // Calculate and set Tax Rate
             const taxAmount = inv.tax_amount || inv.tax || 0;
@@ -165,10 +185,12 @@ export default function CreateInvoice() {
     if (!clientId) return alert('Please select a client')
 
     const payload = { 
-      client_id: clientId, 
+      client_id: clientId,
+      project_id: projectId || null,
       invoice_number: invoiceNumber, 
       currency, 
-      status, // Fix #4: Status is now included in the payload
+      status,
+      payment_integration_enabled: paymentIntegrationEnabled && paymentReady,
       subtotal, 
       tax: taxAmount, 
       discount, 
@@ -231,7 +253,39 @@ export default function CreateInvoice() {
               <option value="Overdue">Overdue</option>
             </select>
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Linked Project</label>
+            <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="w-full p-2 border border-gray-300 rounded-lg">
+              <option value="">None</option>
+              {projects.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+            </select>
+          </div>
         </div>
+
+        {paymentReady && (
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={paymentIntegrationEnabled}
+                  onChange={(e) => setPaymentIntegrationEnabled(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 rounded"
+                />
+                <span className="font-semibold text-blue-900">Enable online payment (Razorpay)</span>
+              </label>
+              <p className="text-xs text-blue-700 mt-1 ml-6">
+                Client pays via portal. Platform fee {commissionPct}% = {currency} {(total * commissionPct / 100).toFixed(2)} ·
+                You receive {currency} {(total * (1 - commissionPct / 100)).toFixed(2)}
+              </p>
+            </div>
+          </div>
+        )}
+        {!paymentReady && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            Connect bank/UPI in Payment Settings to enable Razorpay on invoices.
+          </p>
+        )}
 
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
           <div className="flex justify-between items-center mb-4">

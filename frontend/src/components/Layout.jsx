@@ -133,10 +133,17 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { getMeContext } from '../api'
 
 export default function Layout() {
   const location = useLocation()
   const navigate = useNavigate()
+  const [isAdmin, setIsAdmin] = useState(false)
+
+  useEffect(() => {
+    getMeContext().then(res => res.json()).then(ctx => setIsAdmin(Boolean(ctx.is_admin))).catch(() => {})
+  }, [])
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
@@ -192,9 +199,11 @@ export default function Layout() {
           <Link to="/transactions" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/transactions')}`}>
             💸 Transactions
           </Link>
-          <Link to="/commission-dashboard" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/commission-dashboard')}`}>
-            🏛️ Platform Commission
-          </Link>
+          {isAdmin && (
+            <Link to="/commission-dashboard" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/commission-dashboard')}`}>
+              🏛️ Platform Commission
+            </Link>
+          )}
           <Link to="/payment-settings" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/payment-settings')}`}>
             💳 Payment Settings
           </Link>

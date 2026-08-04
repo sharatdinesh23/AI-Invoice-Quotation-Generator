@@ -27,6 +27,15 @@ export const togglePaymentIntegration = (enable) => apiFetch('/api/payment-accou
 export const getPayouts = () => apiFetch('/api/payouts');
 export const getPaymentSplits = () => apiFetch('/api/payment-splits');
 export const getTransactions = () => apiFetch('/api/transactions');
+export const getPlatformTransactions = () => apiFetch('/api/admin/platform-transactions');
+export const getMeContext = () => apiFetch('/api/me/context');
+export const retryInvoicePayout = (invoiceId) => apiFetch(`/api/invoices/${invoiceId}/retry-payout`, { method: 'POST' });
+export const getProjectDetail = (id) => apiFetch(`/api/projects/${id}`);
+export const getProjectMilestones = (projectId) => apiFetch(`/api/projects/${projectId}/milestones`);
+export const createMilestone = (projectId, data) => apiFetch(`/api/projects/${projectId}/milestones`, { method: 'POST', body: JSON.stringify(data) });
+export const updateMilestone = (projectId, milestoneId, data) => apiFetch(`/api/projects/${projectId}/milestones/${milestoneId}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteMilestone = (projectId, milestoneId) => apiFetch(`/api/projects/${projectId}/milestones/${milestoneId}`, { method: 'DELETE' });
+export const createInvoiceFromMilestone = (projectId, milestoneId) => apiFetch(`/api/projects/${projectId}/milestones/${milestoneId}/create-invoice`, { method: 'POST' });
 export const settleInvoicePayout = (invoiceId, utrNumber) => apiFetch(`/api/invoices/${invoiceId}/settle`, { method: 'POST', body: JSON.stringify({ utr_number: utrNumber }) });
 
 // Expense Categories

@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import * as api from '../api.js';
 
 const Projects = () => {
+  const navigate = useNavigate();
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -10,6 +12,11 @@ const Projects = () => {
   const [showIntegrations, setShowIntegrations] = useState(false);
   const [connections, setConnections] = useState([]);
   const [savingPlatform, setSavingPlatform] = useState(null);
+  const [dragProjectId, setDragProjectId] = useState(null);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [milestones, setMilestones] = useState([]);
+  const [projectInvoices, setProjectInvoices] = useState([]);
+  const [milestoneForm, setMilestoneForm] = useState({ title: '', amount: '', due_date: '' });
   const [platformForms, setPlatformForms] = useState({
     upwork: { api_key: '', api_secret: '' },
     fiverr: { api_key: '', api_secret: '' }
@@ -135,6 +142,62 @@ const Projects = () => {
   };
 
   const getConnection = (name) => connections.find(c => c.platform_name === name);
+
+  const openProjectDetail = async (proj) => {
+    setSelectedProject(proj);
+    try {
+      const res = await api.getProjectDetail(proj.id);
+      const data = await res.json();
+      setMilestones(data.milestones || []);
+      setProjectInvoices(data.invoices || []);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDropOnColumn = async (columnId) => {
+    if (!dragProjectId) return;
+    const proj = projects.find(p => p.id === dragProjectId);
+    if (!proj || proj.status === columnId) {
+      setDragProjectId(null);
+      return;
+    }
+    await handleStatusChange(dragProjectId, columnId);
+    setDragProjectId(null);
+  };
+
+  const handleAddMilestone = async (e) => {
+    e.preventDefault();
+    if (!selectedProject) return;
+    try {
+      const res = await api.createMilestone(selectedProject.id, {
+        title: milestoneForm.title,
+        amount: parseFloat(milestoneForm.amount || 0),
+        due_date: milestoneForm.due_date || undefined,
+        currency: selectedProject.currency || 'INR',
+      });
+      if (res.ok) {
+        setMilestoneForm({ title: '', amount: '', due_date: '' });
+        openProjectDetail(selectedProject);
+      }
+    } catch (err) {
+      alert('Failed to add milestone');
+    }
+  };
+
+  const handleMilestoneInvoice = async (milestoneId) => {
+    try {
+      const res = await api.createInvoiceFromMilestone(selectedProject.id, milestoneId);
+      const data = await res.json();
+      if (res.ok) {
+        alert('Draft invoice created!');
+        openProjectDetail(selectedProject);
+        if (data.invoice?.id) navigate(`/invoices/${data.invoice.id}/edit`);
+      }
+    } catch (err) {
+      alert('Failed to create invoice');
+    }
+  };
 
   const handleStatusChange = async (projectId, newStatus) => {
     try {
@@ -300,7 +363,12 @@ const Projects = () => {
           {columns.map(col => {
             const colProjects = projects.filter(p => (p.status || 'todo') === col.id);
             return (
-              <div key={col.id} className="bg-gray-100 dark:bg-gray-800/60 rounded-xl p-3 flex flex-col min-h-[500px] border border-gray-200 dark:border-gray-700">
+              <div
+                key={col.id}
+                className="bg-gray-100 dark:bg-gray-800/60 rounded-xl p-3 flex flex-col min-h-[500px] border border-gray-200 dark:border-gray-700"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => handleDropOnColumn(col.id)}
+              >
                 <div className={`p-2.5 rounded-lg border font-bold text-xs flex justify-between items-center mb-3 ${col.color}`}>
                   <span>{col.title}</span>
                   <span className="bg-white/80 dark:bg-black/30 px-2 py-0.5 rounded-full">{colProjects.length}</span>
@@ -313,9 +381,17 @@ const Projects = () => {
                     </div>
                   ) : (
                     colProjects.map(proj => (
-                      <div key={proj.id} className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-xs border border-gray-200 dark:border-gray-700 hover:shadow-md transition space-y-2">
+                      <div
+                        key={proj.id}
+                        draggable
+                        onDragStart={() => setDragProjectId(proj.id)}
+                        onDragEnd={() => setDragProjectId(null)}
+                        className={`bg-white dark:bg-gray-800 p-4 rounded-xl shadow-xs border border-gray-200 dark:border-gray-700 hover:shadow-md transition space-y-2 cursor-grab active:cursor-grabbing ${dragProjectId === proj.id ? 'opacity-50' : ''}`}
+                      >
                         <div className="flex justify-between items-start gap-2">
-                          <h4 className="font-bold text-sm text-gray-900 dark:text-white leading-tight">{proj.title}</h4>
+                          <button type="button" onClick={() => openProjectDetail(proj)} className="font-bold text-sm text-left text-gray-900 dark:text-white leading-tight hover:text-blue-600">
+                            {proj.title}
+                          </button>
                           {getSourceBadge(proj.source)}
                         </div>
 
@@ -372,6 +448,63 @@ const Projects = () => {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Project detail + milestones */}
+      {selectedProject && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex justify-end" onClick={() => setSelectedProject(null)}>
+          <div className="w-full max-w-md bg-white dark:bg-gray-800 h-full shadow-xl p-6 overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white">{selectedProject.title}</h3>
+                <p className="text-xs text-gray-500">{selectedProject.currency} {Number(selectedProject.budget || 0).toLocaleString()}</p>
+              </div>
+              <button onClick={() => setSelectedProject(null)} className="text-gray-400 text-xl">&times;</button>
+            </div>
+
+            <h4 className="font-bold text-sm text-gray-700 dark:text-gray-300 mb-2">Milestones</h4>
+            <form onSubmit={handleAddMilestone} className="flex gap-2 mb-3">
+              <input required placeholder="Title" value={milestoneForm.title} onChange={e => setMilestoneForm(f => ({ ...f, title: e.target.value }))}
+                className="flex-1 text-sm border rounded-lg p-2 dark:bg-gray-700 dark:text-white" />
+              <input type="number" placeholder="Amt" value={milestoneForm.amount} onChange={e => setMilestoneForm(f => ({ ...f, amount: e.target.value }))}
+                className="w-20 text-sm border rounded-lg p-2 dark:bg-gray-700 dark:text-white" />
+              <button type="submit" className="px-3 bg-blue-600 text-white text-xs font-bold rounded-lg">Add</button>
+            </form>
+            <ul className="space-y-2 mb-6">
+              {milestones.map(m => (
+                <li key={m.id} className="border rounded-lg p-3 text-sm dark:border-gray-600">
+                  <div className="flex justify-between">
+                    <span className="font-semibold">{m.title}</span>
+                    <span>{m.currency} {Number(m.amount || 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between items-center mt-2">
+                    <span className="text-xs text-gray-500 capitalize">{m.status}</span>
+                    {m.status !== 'invoiced' && (
+                      <button onClick={() => handleMilestoneInvoice(m.id)} className="text-xs text-blue-600 font-bold">→ Invoice</button>
+                    )}
+                  </div>
+                </li>
+              ))}
+              {milestones.length === 0 && <p className="text-xs text-gray-500">No milestones yet.</p>}
+            </ul>
+
+            <h4 className="font-bold text-sm text-gray-700 dark:text-gray-300 mb-2">Linked Invoices</h4>
+            <ul className="space-y-1">
+              {projectInvoices.map(inv => (
+                <li key={inv.id}>
+                  <button onClick={() => navigate(`/invoices/${inv.id}/view`)} className="text-sm text-blue-600 hover:underline">
+                    #{inv.invoice_number} — {inv.status} — {inv.currency} {inv.total}
+                  </button>
+                </li>
+              ))}
+              {projectInvoices.length === 0 && <p className="text-xs text-gray-500">No invoices linked.</p>}
+            </ul>
+            <button onClick={() => navigate(`/invoices/new?project_id=${selectedProject.id}`)}
+              className="mt-4 w-full py-2 bg-green-600 text-white text-sm font-bold rounded-lg">
+              + New Invoice for Project
+            </button>
+          </div>
         </div>
       )}
 
