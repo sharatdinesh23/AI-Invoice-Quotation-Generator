@@ -39,6 +39,7 @@ from payment_routing import (
     complete_payout_transfer,
     route_enabled,
 )
+from project_crm import run_full_project_sync, background_sync_all_gmail_projects
 
 load_dotenv()
 
@@ -421,6 +422,7 @@ class ProjectCreate(BaseModel):
     budget: float = 0.0
     currency: str = "INR"
     deadline: Optional[str] = None
+    external_link: Optional[str] = None
 
 class ProjectUpdate(BaseModel):
     title: Optional[str] = None
@@ -431,6 +433,12 @@ class ProjectUpdate(BaseModel):
     budget: Optional[float] = None
     currency: Optional[str] = None
     deadline: Optional[str] = None
+    external_link: Optional[str] = None
+
+class PlatformConnectionCreate(BaseModel):
+    platform_name: str  # upwork | fiverr
+    api_key: str
+    api_secret: Optional[str] = None
 
 class RecurringExpenseCreate(BaseModel):
     category: str
@@ -1652,9 +1660,15 @@ async def start_scheduler():
     scheduler.add_job(check_recurring_invoices, 'cron', hour=1, minute=0)
     # Run smart reminders at 9:00 AM (so clients get them in the morning)
     scheduler.add_job(check_overdue_invoices_and_remind, 'cron', hour=9, minute=0)
-    # scheduler.add_job(check_overdue_invoices_and_remind, 'interval', minutes=1)
+    # CRM: Gmail project sync every 6 hours for all connected users
+    scheduler.add_job(sync_all_gmail_projects_background, 'interval', hours=6)
     scheduler.start()
     print(" FreelanceOS Schedulers started!")
+
+
+async def sync_all_gmail_projects_background():
+    """Background worker entrypoint for APScheduler."""
+    await background_sync_all_gmail_projects(SUPABASE_URL, SUPABSE_SERVICE_KEY, decrypt_token)
 
 
 # @app.on_event("startup")
@@ -3663,60 +3677,121 @@ async def delete_project(project_id: str, auth_data: dict = Depends(get_current_
 
 @app.post("/api/projects/sync-gmail")
 async def sync_gmail_projects(auth_data: dict = Depends(get_current_user)):
-    """Scan user's connected Gmail inbox for project mentions & Upwork/Fiverr offers"""
+    """Scan Gmail + platform connections and create CRM projects."""
     user = auth_data["user"]
     async with httpx.AsyncClient() as client:
         headers = get_supabase_headers()
-        
-        token_res = await client.get(f"{SUPABASE_URL}/rest/v1/gmail_tokens?user_id=eq.{user.id}", headers=headers)
-        tokens = token_res.json() if token_res.json() else []
-        
-        created_count = 0
-        if tokens and len(tokens) > 0:
-            try:
-                access_token = decrypt_token(tokens[0]["access_token"])
-                gmail_service = build('gmail', 'v1', credentials=Credentials(token=access_token))
-                
-                q = 'subject:("project" OR "offer" OR "contract" OR "upwork" OR "fiverr" OR "freelance")'
-                msg_list = gmail_service.users().messages().list(userId='me', q=q, maxResults=5).execute()
-                messages = msg_list.get('messages', [])
-                
-                for msg_ref in messages:
-                    msg = gmail_service.users().messages().get(userId='me', id=msg_ref['id']).execute()
-                    headers_list = msg.get('payload', {}).get('headers', [])
-                    subject = next((h['value'] for h in headers_list if h['name'].lower() == 'subject'), 'New Email Contract')
-                    sender = next((h['value'] for h in headers_list if h['name'].lower() == 'from'), 'Client')
-                    
-                    source = 'upwork' if 'upwork' in subject.lower() or 'upwork' in sender.lower() else \
-                             'fiverr' if 'fiverr' in subject.lower() or 'fiverr' in sender.lower() else 'gmail'
-                             
-                    proj_check = await client.get(f"{SUPABASE_URL}/rest/v1/projects?user_id=eq.{user.id}&title=eq.{subject[:100]}", headers=headers)
-                    if not proj_check.json():
-                        new_proj = {
-                            "user_id": user.id,
-                            "title": subject[:100],
-                            "description": f"Auto-detected from email: {sender}",
-                            "status": "todo",
-                            "source": source,
-                            "budget": 5000.0,
-                            "currency": "INR"
-                        }
-                        await client.post(f"{SUPABASE_URL}/rest/v1/projects", json=new_proj, headers=headers)
-                        created_count += 1
-            except Exception as e:
-                print(f"⚠️ Gmail project parsing error: {e}")
-                
-        if created_count == 0:
-            proj_res = await client.get(f"{SUPABASE_URL}/rest/v1/projects?user_id=eq.{user.id}", headers=headers)
-            if not proj_res.json():
-                sample_projects = [
-                    {"user_id": user.id, "title": "Upwork - React Web App Redesign", "description": "Client requested dashboard overhaul", "status": "in_progress", "source": "upwork", "budget": 15000.0, "currency": "INR"},
-                    {"user_id": user.id, "title": "Fiverr - Mobile UI Design", "description": "Figma mockups for iOS app", "status": "todo", "source": "fiverr", "budget": 8000.0, "currency": "INR"}
-                ]
-                await client.post(f"{SUPABASE_URL}/rest/v1/projects", json=sample_projects, headers=headers)
-                created_count = 2
+        result = await run_full_project_sync(
+            client, SUPABASE_URL, headers, user.id, decrypt_token
+        )
+        if result.get("gmail", {}).get("error") == "Gmail not connected":
+            raise HTTPException(
+                status_code=400,
+                detail="Gmail not connected. Link Gmail in Settings first.",
+            )
+        return result
 
-        return {"message": f"Gmail & Platform sync completed! {created_count} project(s) added/updated.", "synced_count": created_count}
+
+@app.get("/api/platform-connections")
+async def get_platform_connections(auth_data: dict = Depends(get_current_user)):
+    """List Upwork/Fiverr connections (secrets never returned)."""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/platform_connections?user_id=eq.{user_id}&order=platform_name.asc",
+            headers=headers,
+        )
+        rows = res.json() if res.json() else []
+        safe = [
+            {
+                "id": r["id"],
+                "platform_name": r["platform_name"],
+                "status": r.get("status", "active"),
+                "last_synced_at": r.get("last_synced_at"),
+                "sync_notes": r.get("sync_notes"),
+                "has_credentials": bool(r.get("api_key_encrypted")),
+            }
+            for r in rows
+        ]
+        return {"connections": safe}
+
+
+@app.post("/api/platform-connections")
+async def upsert_platform_connection(
+    body: PlatformConnectionCreate,
+    auth_data: dict = Depends(get_current_user),
+):
+    """Save encrypted Upwork/Fiverr API credentials."""
+    user_id = auth_data["user"].id
+    platform = body.platform_name.lower().strip()
+    if platform not in ("upwork", "fiverr"):
+        raise HTTPException(status_code=400, detail="platform_name must be upwork or fiverr")
+
+    record = {
+        "user_id": user_id,
+        "platform_name": platform,
+        "api_key_encrypted": encrypt_token(body.api_key),
+        "api_secret_encrypted": encrypt_token(body.api_secret) if body.api_secret else None,
+        "status": "active",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    async with httpx.AsyncClient() as client:
+        headers = {**get_supabase_headers(), "Prefer": "resolution=merge-duplicates,return=representation"}
+        res = await client.post(
+            f"{SUPABASE_URL}/rest/v1/platform_connections?on_conflict=user_id,platform_name",
+            json=record,
+            headers=headers,
+        )
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        data = res.json()
+        row = data[0] if isinstance(data, list) and data else data
+        return {
+            "connection": {
+                "id": row.get("id"),
+                "platform_name": platform,
+                "status": "active",
+                "has_credentials": True,
+            },
+            "message": f"{platform.title()} credentials saved securely.",
+        }
+
+
+@app.delete("/api/platform-connections/{connection_id}")
+async def delete_platform_connection(
+    connection_id: str,
+    auth_data: dict = Depends(get_current_user),
+):
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        await client.delete(
+            f"{SUPABASE_URL}/rest/v1/platform_connections?id=eq.{connection_id}&user_id=eq.{user_id}",
+            headers=headers,
+        )
+        return {"message": "Platform connection removed"}
+
+
+@app.post("/api/platform-connections/{connection_id}/sync")
+async def sync_single_platform_connection(
+    connection_id: str,
+    auth_data: dict = Depends(get_current_user),
+):
+    """Trigger sync for one platform connection + Gmail."""
+    user = auth_data["user"]
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        check = await client.get(
+            f"{SUPABASE_URL}/rest/v1/platform_connections?id=eq.{connection_id}&user_id=eq.{user.id}",
+            headers=headers,
+        )
+        if not check.json():
+            raise HTTPException(status_code=404, detail="Connection not found")
+        return await run_full_project_sync(
+            client, SUPABASE_URL, headers, user.id, decrypt_token
+        )
 
 
 # ============================================

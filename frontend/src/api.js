@@ -61,6 +61,10 @@ export const createProject = (data) => apiFetch('/api/projects', { method: 'POST
 export const updateProject = (id, data) => apiFetch(`/api/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 export const deleteProject = (id) => apiFetch(`/api/projects/${id}`, { method: 'DELETE' });
 export const syncGmailProjects = () => apiFetch('/api/projects/sync-gmail', { method: 'POST' });
+export const getPlatformConnections = () => apiFetch('/api/platform-connections');
+export const savePlatformConnection = (data) => apiFetch('/api/platform-connections', { method: 'POST', body: JSON.stringify(data) });
+export const deletePlatformConnection = (id) => apiFetch(`/api/platform-connections/${id}`, { method: 'DELETE' });
+export const syncPlatformConnection = (id) => apiFetch(`/api/platform-connections/${id}/sync`, { method: 'POST' });
 
 // Recurring Expenses
 export const getRecurringExpenses = () => apiFetch('/api/recurring-expenses');

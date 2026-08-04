@@ -7,6 +7,13 @@ const Projects = () => {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [showIntegrations, setShowIntegrations] = useState(false);
+  const [connections, setConnections] = useState([]);
+  const [savingPlatform, setSavingPlatform] = useState(null);
+  const [platformForms, setPlatformForms] = useState({
+    upwork: { api_key: '', api_secret: '' },
+    fiverr: { api_key: '', api_secret: '' }
+  });
 
   const [formData, setFormData] = useState({
     title: '',
@@ -30,7 +37,18 @@ const Projects = () => {
   useEffect(() => {
     fetchProjects();
     fetchClients();
+    fetchConnections();
   }, []);
+
+  const fetchConnections = async () => {
+    try {
+      const res = await api.getPlatformConnections();
+      const data = await res.json();
+      setConnections(data.connections || []);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const fetchProjects = async () => {
     try {
@@ -60,14 +78,63 @@ const Projects = () => {
       setSyncing(true);
       const res = await api.syncGmailProjects();
       const data = await res.json();
-      alert(data.message || 'Gmail & Platform sync finished!');
+      if (!res.ok) {
+        alert(data.detail || 'Sync failed');
+        return;
+      }
+      const gmail = data.gmail || {};
+      alert(
+        data.message ||
+        `Sync done: ${data.synced_count || 0} new, ${gmail.skipped || 0} skipped, ${gmail.scanned || 0} scanned`
+      );
       fetchProjects();
+      fetchConnections();
     } catch (err) {
       alert('Failed to sync emails for projects');
     } finally {
       setSyncing(false);
     }
   };
+
+  const handleSavePlatform = async (platformName) => {
+    const form = platformForms[platformName];
+    if (!form.api_key) {
+      alert('API key is required');
+      return;
+    }
+    try {
+      setSavingPlatform(platformName);
+      const res = await api.savePlatformConnection({
+        platform_name: platformName,
+        api_key: form.api_key,
+        api_secret: form.api_secret || undefined
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.detail || 'Failed to save credentials');
+        return;
+      }
+      alert(data.message || 'Credentials saved');
+      setPlatformForms(p => ({ ...p, [platformName]: { api_key: '', api_secret: '' } }));
+      fetchConnections();
+    } catch (err) {
+      alert('Failed to save platform credentials');
+    } finally {
+      setSavingPlatform(null);
+    }
+  };
+
+  const handleRemovePlatform = async (id) => {
+    if (!window.confirm('Remove this platform connection?')) return;
+    try {
+      await api.deletePlatformConnection(id);
+      fetchConnections();
+    } catch (err) {
+      alert('Failed to remove connection');
+    }
+  };
+
+  const getConnection = (name) => connections.find(c => c.platform_name === name);
 
   const handleStatusChange = async (projectId, newStatus) => {
     try {
@@ -135,6 +202,12 @@ const Projects = () => {
         </div>
         <div className="flex gap-3">
           <button
+            onClick={() => setShowIntegrations(v => !v)}
+            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-lg text-sm font-semibold border border-gray-200 dark:border-gray-600"
+          >
+            🔌 Platform APIs
+          </button>
+          <button
             onClick={handleSyncGmail}
             disabled={syncing}
             className="px-4 py-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:text-indigo-300 rounded-lg text-sm font-semibold border border-indigo-200 shadow-xs flex items-center gap-2"
@@ -149,6 +222,75 @@ const Projects = () => {
           </button>
         </div>
       </div>
+
+      {/* Platform Integrations Panel */}
+      {showIntegrations && (
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white">Upwork & Fiverr Integrations</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Store API credentials securely. Gmail parsing remains the primary auto-detection source until partner APIs are approved.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {['upwork', 'fiverr'].map(platform => {
+              const conn = getConnection(platform);
+              return (
+                <div key={platform} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3">
+                  <div className="flex justify-between items-center">
+                    <h4 className="font-bold capitalize text-gray-900 dark:text-white">{platform}</h4>
+                    {conn?.has_credentials ? (
+                      <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded">Connected</span>
+                    ) : (
+                      <span className="text-xs text-gray-500">Not connected</span>
+                    )}
+                  </div>
+                  {conn?.last_synced_at && (
+                    <p className="text-[11px] text-gray-500">
+                      Last sync: {new Date(conn.last_synced_at).toLocaleString()}
+                    </p>
+                  )}
+                  <input
+                    type="password"
+                    placeholder="API Key"
+                    value={platformForms[platform].api_key}
+                    onChange={(e) => setPlatformForms(p => ({
+                      ...p, [platform]: { ...p[platform], api_key: e.target.value }
+                    }))}
+                    className="w-full rounded-lg border-gray-300 dark:border-gray-600 dark:bg-gray-700 text-sm p-2 dark:text-white"
+                  />
+                  <input
+                    type="password"
+                    placeholder="API Secret (optional)"
+                    value={platformForms[platform].api_secret}
+                    onChange={(e) => setPlatformForms(p => ({
+                      ...p, [platform]: { ...p[platform], api_secret: e.target.value }
+                    }))}
+                    className="w-full rounded-lg border-gray-300 dark:border-gray-600 dark:bg-gray-700 text-sm p-2 dark:text-white"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleSavePlatform(platform)}
+                      disabled={savingPlatform === platform}
+                      className="px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg"
+                    >
+                      {savingPlatform === platform ? 'Saving...' : 'Save'}
+                    </button>
+                    {conn && (
+                      <button
+                        onClick={() => handleRemovePlatform(conn.id)}
+                        className="px-3 py-1.5 text-red-600 text-xs font-bold border border-red-200 rounded-lg"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Kanban Board */}
       {loading ? (
@@ -179,6 +321,17 @@ const Projects = () => {
 
                         {proj.description && (
                           <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{proj.description}</p>
+                        )}
+
+                        {proj.external_link && (
+                          <a
+                            href={proj.external_link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] text-blue-600 hover:underline block truncate"
+                          >
+                            View on {proj.source === 'upwork' ? 'Upwork' : proj.source === 'fiverr' ? 'Fiverr' : 'platform'}
+                          </a>
                         )}
 
                         <div className="flex justify-between items-center text-xs pt-1 border-t border-gray-100 dark:border-gray-700">
