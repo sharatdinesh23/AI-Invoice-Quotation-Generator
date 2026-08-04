@@ -40,6 +40,7 @@ from payment_routing import (
     route_enabled,
 )
 from project_crm import run_full_project_sync, background_sync_all_gmail_projects
+from admin_auth import is_platform_admin, fetch_profile_flags
 
 load_dotenv()
 
@@ -90,6 +91,21 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         print(f"AUTH EXCEPTION: {e}")
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
+async def get_platform_admin(auth_data: dict = Depends(get_current_user)):
+    """Require platform admin (is_admin flag or PLATFORM_ADMIN_EMAILS env)."""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    async with httpx.AsyncClient() as client:
+        profile = await fetch_profile_flags(
+            client,
+            SUPABASE_URL,
+            {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"},
+            user.id,
+        )
+    if not is_platform_admin(user.email or "", profile):
+        raise HTTPException(status_code=403, detail="Platform admin access required")
+    return auth_data
+
 async def require_pro_plan(auth_data: dict = Depends(get_current_user)):
     user = auth_data["user"]
     token = auth_data["token"]
@@ -139,6 +155,37 @@ def read_root():
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/api/me/context")
+async def get_me_context(auth_data: dict = Depends(get_current_user)):
+    """Session context: admin flag, payment account readiness."""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {token}",
+            "Accept-Profile": "freelancing_demo",
+        }
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}"
+            f"&select=is_admin,commission_percentage,payment_integration_enabled,enable_payment_integration,"
+            f"razorpay_account_id,payout_destination_value,razorpay_account_status",
+            headers=headers,
+        )
+        profile = res.json()[0] if res.json() else {}
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "is_admin": is_platform_admin(user.email or "", profile),
+        "payment_ready": bool(
+            is_payment_integration_enabled(profile) and profile.get("payout_destination_value")
+        ),
+        "commission_percentage": profile.get("commission_percentage", 2.0),
+        "razorpay_account_id": profile.get("razorpay_account_id"),
+    }
+
 
 @app.get("/api/dashboard")
 async def get_dashboard_data(auth_data: dict = Depends(get_current_user)):
@@ -440,6 +487,24 @@ class PlatformConnectionCreate(BaseModel):
     api_key: str
     api_secret: Optional[str] = None
 
+class MilestoneCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    amount: float = 0.0
+    currency: str = "INR"
+    due_date: Optional[str] = None
+    status: str = "pending"
+    sort_order: int = 0
+
+class MilestoneUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    due_date: Optional[str] = None
+    status: Optional[str] = None
+    sort_order: Optional[int] = None
+
 class RecurringExpenseCreate(BaseModel):
     category: str
     amount: float
@@ -538,7 +603,19 @@ async def get_invoice(invoice_id: str, auth_data: dict = Depends(get_current_use
 async def create_invoice(request: dict, auth_data: dict = Depends(get_current_user)):
     user = auth_data["user"]
     token = auth_data["token"]
-    invoice_data = {"user_id": user.id, "client_id": request.get("client_id"), "invoice_number": request.get("invoice_number"), "status": request.get("status", "Draft"), "subtotal": request.get("subtotal"), "tax_amount": request.get("tax", 0), "discount": request.get("discount", 0), "total": request.get("total"), "currency": request.get("currency", "USD")}
+    invoice_data = {
+        "user_id": user.id,
+        "client_id": request.get("client_id"),
+        "project_id": request.get("project_id"),
+        "invoice_number": request.get("invoice_number"),
+        "status": request.get("status", "Draft"),
+        "subtotal": request.get("subtotal"),
+        "tax_amount": request.get("tax", 0),
+        "discount": request.get("discount", 0),
+        "total": request.get("total"),
+        "currency": request.get("currency", "USD"),
+        "payment_integration_enabled": bool(request.get("payment_integration_enabled", False)),
+    }
     
     async with httpx.AsyncClient() as client:
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo", "Prefer": "return=representation"}
@@ -556,7 +633,19 @@ async def create_invoice(request: dict, auth_data: dict = Depends(get_current_us
 async def update_invoice(invoice_id: str, request: dict, auth_data: dict = Depends(get_current_user)):
     user = auth_data["user"]
     token = auth_data["token"]
-    invoice_data = {"client_id": request.get("client_id"), "invoice_number": request.get("invoice_number"), "status": request.get("status"), "subtotal": request.get("subtotal"), "tax_amount": request.get("tax", 0), "discount": request.get("discount", 0), "total": request.get("total"), "currency": request.get("currency", "USD")}
+    invoice_data = {
+        "client_id": request.get("client_id"),
+        "project_id": request.get("project_id"),
+        "invoice_number": request.get("invoice_number"),
+        "status": request.get("status"),
+        "subtotal": request.get("subtotal"),
+        "tax_amount": request.get("tax", 0),
+        "discount": request.get("discount", 0),
+        "total": request.get("total"),
+        "currency": request.get("currency", "USD"),
+    }
+    if "payment_integration_enabled" in request:
+        invoice_data["payment_integration_enabled"] = bool(request.get("payment_integration_enabled"))
     
     async with httpx.AsyncClient() as client:
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept-Profile": "freelancing_demo", "Content-Profile": "freelancing_demo", "Prefer": "return=minimal"}
@@ -1736,10 +1825,16 @@ async def create_payment_order(request: dict):
         
         # Fetch invoice details including user_id for commission calculation
         inv_res = await client.get(
-            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=total,currency,invoice_number,user_id", 
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=total,currency,invoice_number,user_id,payment_integration_enabled", 
             headers=headers
         )
         invoice = inv_res.json()[0]
+        
+        if not invoice.get("payment_integration_enabled"):
+            raise HTTPException(
+                status_code=400,
+                detail="Online payment is not enabled for this invoice. Please contact the freelancer.",
+            )
         
         # Get freelancer profile for commission calculation
         profile_res = await client.get(
@@ -1757,7 +1852,11 @@ async def create_payment_order(request: dict):
         account_transfers = []
         
         # Check if freelancer has enabled payment integration and has Route account
-        if is_payment_integration_enabled(profile) and profile.get("razorpay_account_id"):
+        if (
+            invoice.get("payment_integration_enabled")
+            and is_payment_integration_enabled(profile)
+            and profile.get("razorpay_account_id")
+        ):
             commission_pct = float(profile.get("commission_percentage", 2.0))
             commission_amount = int(amount_in_paise * (commission_pct / 100))
             freelancer_amount = amount_in_paise - commission_amount
@@ -2470,8 +2569,8 @@ async def toggle_payment_integration(request: dict, auth_data: dict = Depends(ge
     return {"message": f"Payment integration {'enabled' if enable else 'disabled'} successfully"}
 
 @app.post("/api/payment-account/update-commission")
-async def update_commission_percentage(request: dict, auth_data: dict = Depends(get_current_user)):
-    """Update commission percentage (admin only feature)"""
+async def update_commission_percentage(request: dict, auth_data: dict = Depends(get_platform_admin)):
+    """Update commission percentage (platform admin only)"""
     user = auth_data["user"]
     token = auth_data["token"]
     
@@ -2527,7 +2626,10 @@ async def create_payment_order_with_routing(invoice_id: str, request: dict, auth
         
         profile = profile_res.json()[0] if profile_res.json() else {}
         commission_pct = profile.get("commission_percentage", 2.00)
-        payment_enabled = is_payment_integration_enabled(profile)
+        payment_enabled = (
+            bool(invoice.get("payment_integration_enabled"))
+            and is_payment_integration_enabled(profile)
+        )
         
         # Calculate amounts
         total_amount = float(invoice.get("total", 0))
@@ -3059,6 +3161,7 @@ async def settle_invoice_payout(invoice_id: str, request: dict = {}, auth_data: 
     """
     Settle payout to freelancer for an invoice.
     Updates status from Paid -> Completed and records UTR number.
+  Platform admin or invoice owner only.
     """
     user = auth_data["user"]
     token = auth_data["token"]
@@ -3077,7 +3180,14 @@ async def settle_invoice_payout(invoice_id: str, request: dict = {}, auth_data: 
     }
     
     async with httpx.AsyncClient() as client:
-        # Check invoice status first
+        user_headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {token}",
+            "Accept-Profile": "freelancing_demo",
+        }
+        profile = await fetch_profile_flags(client, SUPABASE_URL, user_headers, user.id)
+        is_admin = is_platform_admin(user.email or "", profile)
+
         inv_res = await client.get(
             f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}",
             headers=headers
@@ -3087,6 +3197,8 @@ async def settle_invoice_payout(invoice_id: str, request: dict = {}, auth_data: 
             raise HTTPException(status_code=404, detail="Invoice not found")
         
         invoice = inv_data[0]
+        if not is_admin and invoice.get("user_id") != user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to settle this invoice")
         
         # Settle invoice: set status to Completed, settlement_status to settled, record UTR
         settled_at = datetime.utcnow().isoformat()
@@ -3119,6 +3231,107 @@ async def settle_invoice_payout(invoice_id: str, request: dict = {}, auth_data: 
             "settlement_status": "settled",
             "utr_number": utr_number,
             "settled_at": settled_at
+        }
+
+
+@app.post("/api/invoices/{invoice_id}/retry-payout")
+async def retry_invoice_payout(invoice_id: str, auth_data: dict = Depends(get_current_user)):
+    """Retry failed Razorpay Route transfer for a paid invoice."""
+    user = auth_data["user"]
+    token = auth_data["token"]
+
+    async with httpx.AsyncClient() as client:
+        user_headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {token}",
+            "Accept-Profile": "freelancing_demo",
+        }
+        profile = await fetch_profile_flags(client, SUPABASE_URL, user_headers, user.id)
+        is_admin = is_platform_admin(user.email or "", profile)
+
+        service_headers = {
+            "apikey": SUPABSE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}",
+            "Content-Type": "application/json",
+            "Accept-Profile": "freelancing_demo",
+            "Content-Profile": "freelancing_demo",
+        }
+        inv_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=*",
+            headers=service_headers,
+        )
+        inv_list = inv_res.json() if inv_res.json() else []
+        if not inv_list:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        invoice = inv_list[0]
+
+        if not is_admin and invoice.get("user_id") != user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to retry this payout")
+
+        if invoice.get("status") not in ("Paid", "Completed"):
+            raise HTTPException(status_code=400, detail="Invoice must be paid before retrying payout")
+
+        if invoice.get("payout_status") == "completed":
+            raise HTTPException(status_code=400, detail="Payout already completed")
+
+        prof_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}"
+            f"&select=razorpay_account_id,commission_percentage,payment_integration_enabled,enable_payment_integration",
+            headers=service_headers,
+        )
+        freelancer_profile = prof_res.json()[0] if prof_res.json() else {}
+        account_id = freelancer_profile.get("razorpay_account_id")
+        payment_id = invoice.get("razorpay_payment_id")
+        payout_amount = float(invoice.get("freelancer_payout_amount") or 0)
+        currency = invoice.get("currency", "INR")
+
+        transfer_id = None
+        if account_id and payment_id and payout_amount > 0:
+            try:
+                transfer_result = razorpay_client.payment.transfer(
+                    payment_id,
+                    {
+                        "transfers": [
+                            {
+                                "account": account_id,
+                                "amount": int(payout_amount * 100),
+                                "currency": currency,
+                                "on_hold": 0,
+                                "notes": {"invoice_id": invoice_id},
+                            }
+                        ]
+                    },
+                )
+                items = transfer_result.get("items") or transfer_result.get("transfers") or []
+                if items:
+                    transfer_id = items[0].get("id")
+            except Exception as exc:
+                await client.patch(
+                    f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}",
+                    json={"payout_status": "failed", "payout_failure_reason": str(exc)[:500]},
+                    headers=service_headers,
+                )
+                raise HTTPException(status_code=502, detail=f"Razorpay transfer retry failed: {exc}") from exc
+
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}",
+            json={
+                "payout_status": "processing",
+                "payout_transfer_id": transfer_id,
+                "settlement_status": "processing",
+            },
+            headers=service_headers,
+        )
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/payouts?invoice_id=eq.{invoice_id}",
+            json={"status": "processing", "payout_reference": transfer_id or payment_id},
+            headers=service_headers,
+        )
+
+        return {
+            "message": "Payout retry initiated via Razorpay Route" if transfer_id else "Payout marked for processing (manual settlement may be required)",
+            "transfer_id": transfer_id,
+            "invoice_id": invoice_id,
         }
 
 @app.get("/api/public/invoices/{invoice_id}/settlement-status")
@@ -3189,81 +3402,102 @@ async def get_international_wire_details(invoice_id: str):
 # SETTLED TRANSACTIONS LEDGER ENDPOINT
 # ==============================================================================
 
+def _transactions_from_invoices(invoices: list) -> dict:
+    transactions = []
+    for inv in invoices:
+        total_amount = float(inv.get("total", 0))
+        commission_amount = float(inv.get("platform_commission_amount") or round(total_amount * 0.02, 2))
+        payout_amount = float(inv.get("freelancer_payout_amount") or round(total_amount - commission_amount, 2))
+        is_settled = (
+            inv.get("status") == "Completed"
+            or inv.get("settlement_status") == "settled"
+            or inv.get("payout_status") == "completed"
+        )
+        is_failed = inv.get("payout_status") == "failed"
+        is_processing = inv.get("payout_status") in ("processing", "pending_settlement") and not is_settled
+        if is_settled:
+            freelancer_payout_status = "Paid"
+        elif is_failed:
+            freelancer_payout_status = "Failed"
+        elif is_processing:
+            freelancer_payout_status = "Processing"
+        else:
+            freelancer_payout_status = "To Be Paid"
+        transactions.append({
+            "id": inv.get("id"),
+            "invoice_id": inv.get("id"),
+            "invoice_number": inv.get("invoice_number"),
+            "client_name": inv.get("clients", {}).get("name") if inv.get("clients") else "Client",
+            "client_email": inv.get("clients", {}).get("email") if inv.get("clients") else "N/A",
+            "freelancer_id": inv.get("user_id"),
+            "total_amount": total_amount,
+            "currency": inv.get("currency", "USD"),
+            "commission_amount": commission_amount,
+            "freelancer_payout_amount": payout_amount,
+            "client_status": "Paid",
+            "freelancer_payout_status": freelancer_payout_status,
+            "payout_status": inv.get("payout_status"),
+            "utr_number": inv.get("utr_number"),
+            "settled_at": inv.get("settled_at"),
+            "created_at": inv.get("created_at"),
+            "is_international": inv.get("is_international", False),
+        })
+    total_settled = sum(t["freelancer_payout_amount"] for t in transactions if t["freelancer_payout_status"] == "Paid")
+    total_to_be_paid = sum(
+        t["freelancer_payout_amount"]
+        for t in transactions
+        if t["freelancer_payout_status"] in ("To Be Paid", "Failed")
+    )
+    total_commission = sum(t["commission_amount"] for t in transactions)
+    return {
+        "transactions": transactions,
+        "summary": {
+            "total_settled_amount": round(total_settled, 2),
+            "total_to_be_paid_amount": round(total_to_be_paid, 2),
+            "total_commission_amount": round(total_commission, 2),
+            "count_total": len(transactions),
+            "count_settled": sum(1 for t in transactions if t["freelancer_payout_status"] == "Paid"),
+            "count_pending": sum(1 for t in transactions if t["freelancer_payout_status"] == "To Be Paid"),
+            "count_failed": sum(1 for t in transactions if t["freelancer_payout_status"] == "Failed"),
+        },
+    }
+
+
 @app.get("/api/transactions")
 async def get_settled_transactions(auth_data: dict = Depends(get_current_user)):
-    """
-    Get list of all client-to-freelancer transactions.
-    Tracks client status (Paid) and freelancer payout status (To Be Paid -> Paid with UTR).
-    """
+    """Freelancer's own paid invoice transactions."""
     user = auth_data["user"]
     token = auth_data["token"]
-    
     async with httpx.AsyncClient() as client:
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {token}",
-            "Accept-Profile": "freelancing_demo"
+            "Accept-Profile": "freelancing_demo",
         }
-        
-        # Query invoices that have client payments (status Paid or Completed)
         res = await client.get(
-            f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&status=in.(Paid,Completed)&select=*,clients(name,email)&order=created_at.desc",
-            headers=headers
+            f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&status=in.(Paid,Completed)"
+            f"&select=*,clients(name,email)&order=created_at.desc",
+            headers=headers,
         )
-        
-        invoices = res.json() if res.json() else []
-        
-        transactions = []
-        for inv in invoices:
-            total_amount = float(inv.get("total", 0))
-            commission_amount = float(inv.get("platform_commission_amount") or round(total_amount * 0.02, 2))
-            payout_amount = float(inv.get("freelancer_payout_amount") or round(total_amount - commission_amount, 2))
-            
-            # Map status
-            is_settled = inv.get("status") == "Completed" or inv.get("settlement_status") == "settled" or inv.get("payout_status") == "completed"
-            is_processing = inv.get("payout_status") in ("processing", "pending_settlement") and not is_settled
-            
-            if is_settled:
-                freelancer_payout_status = "Paid"
-            elif is_processing:
-                freelancer_payout_status = "Processing"
-            else:
-                freelancer_payout_status = "To Be Paid"
-            client_status = "Paid"
-            
-            transactions.append({
-                "id": inv.get("id"),
-                "invoice_id": inv.get("id"),
-                "invoice_number": inv.get("invoice_number"),
-                "client_name": inv.get("clients", {}).get("name") if inv.get("clients") else "Client",
-                "client_email": inv.get("clients", {}).get("email") if inv.get("clients") else "N/A",
-                "total_amount": total_amount,
-                "currency": inv.get("currency", "USD"),
-                "commission_amount": commission_amount,
-                "freelancer_payout_amount": payout_amount,
-                "client_status": client_status,
-                "freelancer_payout_status": freelancer_payout_status,
-                "utr_number": inv.get("utr_number"),
-                "settled_at": inv.get("settled_at"),
-                "created_at": inv.get("created_at"),
-                "is_international": inv.get("is_international", False)
-            })
-            
-        total_settled = sum(t["freelancer_payout_amount"] for t in transactions if t["freelancer_payout_status"] == "Paid")
-        total_to_be_paid = sum(t["freelancer_payout_amount"] for t in transactions if t["freelancer_payout_status"] == "To Be Paid")
-        total_commission = sum(t["commission_amount"] for t in transactions)
-        
-        return {
-            "transactions": transactions,
-            "summary": {
-                "total_settled_amount": round(total_settled, 2),
-                "total_to_be_paid_amount": round(total_to_be_paid, 2),
-                "total_commission_amount": round(total_commission, 2),
-                "count_total": len(transactions),
-                "count_settled": sum(1 for t in transactions if t["freelancer_payout_status"] == "Paid"),
-                "count_pending": sum(1 for t in transactions if t["freelancer_payout_status"] == "To Be Paid")
-            }
+        return _transactions_from_invoices(res.json() if res.json() else [])
+
+
+@app.get("/api/admin/platform-transactions")
+async def get_platform_transactions(auth_data: dict = Depends(get_platform_admin)):
+    """Platform-wide transaction ledger (admin only)."""
+    token = auth_data["token"]
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {token}",
+            "Accept-Profile": "freelancing_demo",
         }
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?status=in.(Paid,Completed)"
+            f"&select=*,clients(name,email)&order=created_at.desc",
+            headers=headers,
+        )
+        return _transactions_from_invoices(res.json() if res.json() else [])
 
 
 # ============================================
@@ -3792,6 +4026,180 @@ async def sync_single_platform_connection(
         return await run_full_project_sync(
             client, SUPABASE_URL, headers, user.id, decrypt_token
         )
+
+
+# ============================================
+# PROJECT MILESTONES & INVOICE LINKING
+# ============================================
+
+@app.get("/api/projects/{project_id}")
+async def get_project_detail(project_id: str, auth_data: dict = Depends(get_current_user)):
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        proj_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/projects?id=eq.{project_id}&user_id=eq.{user_id}&select=*,clients(name,email)",
+            headers=headers,
+        )
+        projects = proj_res.json() if proj_res.json() else []
+        if not projects:
+            raise HTTPException(status_code=404, detail="Project not found")
+        ms_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/project_milestones?project_id=eq.{project_id}&order=sort_order.asc,created_at.asc",
+            headers=headers,
+        )
+        inv_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?project_id=eq.{project_id}&user_id=eq.{user_id}"
+            f"&status=neq.Void&select=id,invoice_number,status,total,currency,created_at&order=created_at.desc",
+            headers=headers,
+        )
+        return {
+            "project": projects[0],
+            "milestones": ms_res.json() if ms_res.json() else [],
+            "invoices": inv_res.json() if inv_res.json() else [],
+        }
+
+
+@app.get("/api/projects/{project_id}/milestones")
+async def list_milestones(project_id: str, auth_data: dict = Depends(get_current_user)):
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/project_milestones?project_id=eq.{project_id}&user_id=eq.{user_id}&order=sort_order.asc",
+            headers=headers,
+        )
+        return {"milestones": res.json() if res.json() else []}
+
+
+@app.post("/api/projects/{project_id}/milestones")
+async def create_milestone(project_id: str, body: MilestoneCreate, auth_data: dict = Depends(get_current_user)):
+    user_id = auth_data["user"].id
+    data = body.model_dump()
+    data["project_id"] = project_id
+    data["user_id"] = user_id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.post(f"{SUPABASE_URL}/rest/v1/project_milestones", json=data, headers=headers)
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        result = res.json()
+        return {"milestone": result[0] if isinstance(result, list) else result}
+
+
+@app.put("/api/projects/{project_id}/milestones/{milestone_id}")
+async def update_milestone(
+    project_id: str, milestone_id: str, body: MilestoneUpdate, auth_data: dict = Depends(get_current_user)
+):
+    user_id = auth_data["user"].id
+    update_data = {k: v for k, v in body.model_dump().items() if v is not None}
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/project_milestones?id=eq.{milestone_id}&project_id=eq.{project_id}&user_id=eq.{user_id}",
+            json=update_data,
+            headers=headers,
+        )
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        return {"message": "Milestone updated"}
+
+
+@app.delete("/api/projects/{project_id}/milestones/{milestone_id}")
+async def delete_milestone(project_id: str, milestone_id: str, auth_data: dict = Depends(get_current_user)):
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        await client.delete(
+            f"{SUPABASE_URL}/rest/v1/project_milestones?id=eq.{milestone_id}&project_id=eq.{project_id}&user_id=eq.{user_id}",
+            headers=headers,
+        )
+        return {"message": "Milestone deleted"}
+
+
+@app.post("/api/projects/{project_id}/milestones/{milestone_id}/create-invoice")
+async def create_invoice_from_milestone(
+    project_id: str, milestone_id: str, auth_data: dict = Depends(get_current_user)
+):
+    """Create a draft invoice linked to project + milestone."""
+    user = auth_data["user"]
+    token = auth_data["token"]
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        ms_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/project_milestones?id=eq.{milestone_id}&project_id=eq.{project_id}&user_id=eq.{user.id}",
+            headers=headers,
+        )
+        milestones = ms_res.json() if ms_res.json() else []
+        if not milestones:
+            raise HTTPException(status_code=404, detail="Milestone not found")
+        milestone = milestones[0]
+
+        proj_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/projects?id=eq.{project_id}&user_id=eq.{user.id}&select=client_id,title,currency",
+            headers=headers,
+        )
+        project = proj_res.json()[0] if proj_res.json() else {}
+
+        num_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user.id}&select=invoice_number&order=created_at.desc&limit=1",
+            headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {token}", "Accept-Profile": "freelancing_demo"},
+        )
+        last = num_res.json()[0]["invoice_number"] if num_res.json() else "INV-0"
+        try:
+            prefix, num = last.rsplit("-", 1)
+            next_num = f"{prefix}-{int(num) + 1}"
+        except Exception:
+            next_num = f"INV-{datetime.now(timezone.utc).strftime('%Y%m%d')}-1"
+
+        amount = float(milestone.get("amount") or 0)
+        currency = milestone.get("currency") or project.get("currency") or "INR"
+        invoice_payload = {
+            "user_id": user.id,
+            "client_id": project.get("client_id"),
+            "project_id": project_id,
+            "invoice_number": next_num,
+            "status": "Draft",
+            "subtotal": amount,
+            "tax_amount": 0,
+            "discount": 0,
+            "total": amount,
+            "currency": currency,
+            "payment_integration_enabled": False,
+        }
+        user_headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept-Profile": "freelancing_demo",
+            "Content-Profile": "freelancing_demo",
+            "Prefer": "return=representation",
+        }
+        inv_res = await client.post(f"{SUPABASE_URL}/rest/v1/invoices", json=invoice_payload, headers=user_headers)
+        if inv_res.status_code >= 400:
+            raise HTTPException(status_code=inv_res.status_code, detail=inv_res.text)
+        invoice = inv_res.json()[0]
+        invoice_id = invoice["id"]
+
+        await client.post(
+            f"{SUPABASE_URL}/rest/v1/invoice_items",
+            json=[{
+                "user_id": user.id,
+                "invoice_id": invoice_id,
+                "description": f"{milestone['title']} — {project.get('title', 'Project')}",
+                "quantity": 1,
+                "rate": amount,
+                "amount": amount,
+            }],
+            headers=user_headers,
+        )
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/project_milestones?id=eq.{milestone_id}",
+            json={"invoice_id": invoice_id, "status": "invoiced", "updated_at": datetime.now(timezone.utc).isoformat()},
+            headers=headers,
+        )
+        return {"invoice": invoice, "message": "Draft invoice created from milestone"}
 
 
 # ============================================

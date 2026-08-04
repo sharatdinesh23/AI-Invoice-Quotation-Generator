@@ -261,13 +261,20 @@ export default function PublicInvoiceView() {
         <div className="bg-gray-50 p-8 border-t border-gray-200 text-center space-y-4">
           {!isPaid ? (
             <div className="space-y-3">
-              <button 
-                onClick={handlePayment} 
-                disabled={processing}
-                className="w-full sm:w-auto px-8 py-3.5 bg-blue-600 text-white rounded-xl font-bold text-lg hover:bg-blue-700 transition shadow-lg disabled:opacity-50"
-              >
-                {processing ? 'Processing Payment...' : `💳 Pay ${currency} ${total.toFixed(2)} Online`}
-              </button>
+              {invoice.payment_integration_enabled ? (
+                <button 
+                  onClick={handlePayment} 
+                  disabled={processing}
+                  className="w-full sm:w-auto px-8 py-3.5 bg-blue-600 text-white rounded-xl font-bold text-lg hover:bg-blue-700 transition shadow-lg disabled:opacity-50"
+                >
+                  {processing ? 'Processing Payment...' : `💳 Pay ${currency} ${total.toFixed(2)} Online`}
+                </button>
+              ) : (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 text-sm">
+                  <p className="font-semibold">Online payment not enabled for this invoice.</p>
+                  <p className="mt-1 text-amber-700">Please pay via bank transfer using details provided by the freelancer, then they will mark it as paid.</p>
+                </div>
+              )}
             </div>
           ) : isCompleted ? (
             <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl text-emerald-800 font-bold text-base flex flex-col items-center gap-1">
