@@ -19,6 +19,16 @@ export const apiFetch = async (endpoint, options = {}) => {
   return response
 }
 
+// Payment account / Route
+export const getPaymentAccountStatus = () => apiFetch('/api/payment-account/status');
+export const connectPaymentAccount = () => apiFetch('/api/payment-account/connect', { method: 'POST' });
+export const updatePaymentAccountDetails = (data) => apiFetch('/api/payment-account/update-details', { method: 'POST', body: JSON.stringify(data) });
+export const togglePaymentIntegration = (enable) => apiFetch('/api/payment-account/toggle-integration', { method: 'POST', body: JSON.stringify({ enable }) });
+export const getPayouts = () => apiFetch('/api/payouts');
+export const getPaymentSplits = () => apiFetch('/api/payment-splits');
+export const getTransactions = () => apiFetch('/api/transactions');
+export const settleInvoicePayout = (invoiceId, utrNumber) => apiFetch(`/api/invoices/${invoiceId}/settle`, { method: 'POST', body: JSON.stringify({ utr_number: utrNumber }) });
+
 // Expense Categories
 export const getExpenseCategories = () => apiFetch('/api/expenses/categories');
 export const createExpenseCategory = (data) => apiFetch('/api/expenses/categories', { method: 'POST', body: JSON.stringify(data) });
@@ -44,6 +54,22 @@ export const getProfitLoss = (params = {}) => {
   const queryString = new URLSearchParams(params).toString();
   return apiFetch(`/api/profit-loss${queryString ? '?' + queryString : ''}`);
 };
+
+// Projects / CRM
+export const getProjects = () => apiFetch('/api/projects');
+export const createProject = (data) => apiFetch('/api/projects', { method: 'POST', body: JSON.stringify(data) });
+export const updateProject = (id, data) => apiFetch(`/api/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteProject = (id) => apiFetch(`/api/projects/${id}`, { method: 'DELETE' });
+export const syncGmailProjects = () => apiFetch('/api/projects/sync-gmail', { method: 'POST' });
+
+// Recurring Expenses
+export const getRecurringExpenses = () => apiFetch('/api/recurring-expenses');
+export const createRecurringExpense = (data) => apiFetch('/api/recurring-expenses', { method: 'POST', body: JSON.stringify(data) });
+export const deleteRecurringExpense = (id) => apiFetch(`/api/recurring-expenses/${id}`, { method: 'DELETE' });
+export const processRecurringExpenses = () => apiFetch('/api/recurring-expenses/process', { method: 'POST' });
+
+// Receipt Upload
+export const uploadExpenseReceipt = (data) => apiFetch('/api/expenses/upload-receipt', { method: 'POST', body: JSON.stringify(data) });
 
 // Existing API helpers
 export const getClients = () => apiFetch('/api/clients');

@@ -27,6 +27,18 @@ from groq import Groq
 from datetime import date, timedelta
 from typing import Optional
 from pydantic import BaseModel
+from payment_routing import (
+    is_payment_integration_enabled,
+    payment_integration_patch,
+    calculate_split,
+    build_account_transfers,
+    create_razorpay_linked_account,
+    map_account_status,
+    ensure_razorpay_linked_account,
+    record_invoice_payment_settlement,
+    complete_payout_transfer,
+    route_enabled,
+)
 
 load_dotenv()
 
@@ -400,12 +412,41 @@ class ExpenseUpdate(BaseModel):
     receipt_url: Optional[str] = None
     bill_number: Optional[str] = None
 
+class ProjectCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    client_id: Optional[str] = None
+    status: str = "todo"
+    source: str = "manual"
+    budget: float = 0.0
+    currency: str = "INR"
+    deadline: Optional[str] = None
+
+class ProjectUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    client_id: Optional[str] = None
+    status: Optional[str] = None
+    source: Optional[str] = None
+    budget: Optional[float] = None
+    currency: Optional[str] = None
+    deadline: Optional[str] = None
+
+class RecurringExpenseCreate(BaseModel):
+    category: str
+    amount: float
+    currency: str = "INR"
+    frequency: str = "monthly"
+    vendor_name: Optional[str] = None
+    description: Optional[str] = None
+    next_due_date: str
+
 
 # ==============================================================================
-# PRODUCTS API
+# INVOICES API
 # ==============================================================================
-@app.put("/api/products/{product_id}")
-async def update_product(product_id: str, request: dict, auth_data: dict = Depends(get_current_user)):
+@app.get("/api/invoices")
+async def get_invoices(auth_data: dict = Depends(get_current_user)):
     user_id = auth_data['user'].id
     async with httpx.AsyncClient() as client:
         headers = {
@@ -1701,20 +1742,17 @@ async def create_payment_order(request: dict):
         freelancer_amount = amount_in_paise
         account_transfers = []
         
-        # Check if freelancer has enabled payment integration and has payout details
-        if profile.get("payment_integration_enabled") and profile.get("razorpay_account_id"):
+        # Check if freelancer has enabled payment integration and has Route account
+        if is_payment_integration_enabled(profile) and profile.get("razorpay_account_id"):
             commission_pct = float(profile.get("commission_percentage", 2.0))
             commission_amount = int(amount_in_paise * (commission_pct / 100))
             freelancer_amount = amount_in_paise - commission_amount
-            
-            # Create account transfer for Razorpay Route
-            account_transfers.append({
-                "account": profile["razorpay_account_id"],
-                "amount": freelancer_amount,
-                "currency": currency,
-                "on_hold": 0,
-                "reference_id": f"inv_{invoice_id}"
-            })
+            account_transfers = build_account_transfers(
+                profile["razorpay_account_id"],
+                freelancer_amount,
+                currency,
+                invoice_id,
+            )
         
         order_data = {
             "amount": amount_in_paise,
@@ -1768,96 +1806,36 @@ async def verify_payment(request: dict):
             "Content-Profile": "freelancing_demo"
         }
         
-        inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=user_id,total,currency", headers=headers)
-        inv_data = inv_res.json()[0]
+        inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&select=*,clients(name,email)", headers=headers)
+        inv_list = inv_res.json() if inv_res.json() else []
+        if not inv_list:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        inv_data = inv_list[0]
         
         # Get freelancer profile for commission calculation
         profile_res = await client.get(
-            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{inv_data['user_id']}&select=commission_percentage,payment_integration_enabled,razorpay_account_id",
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{inv_data['user_id']}&select=commission_percentage,payment_integration_enabled,enable_payment_integration,razorpay_account_id",
             headers=headers
         )
         profile = profile_res.json()[0] if profile_res.json() else {}
         
-        commission_pct = profile.get("commission_percentage", 2.00)
-        payment_enabled = profile.get("payment_integration_enabled", False)
-        total_amount = float(inv_data['total'])
-        
-        # Calculate commission and payout
-        commission_amount = round((total_amount * commission_pct / 100), 2)
-        freelancer_payout = round((total_amount - commission_amount), 2)
-        
-        # Update invoice status
-        await client.patch(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}", json={
-            "status": "Paid",
-            "settlement_status": "pending",
-            "payout_status": "pending_settlement",
-            "razorpay_payment_id": razorpay_payment_id,
-            "platform_commission_amount": commission_amount,
-            "freelancer_payout_amount": freelancer_payout
-        }, headers=headers)
-        
-        # Record payment
-        await client.post(f"{SUPABASE_URL}/rest/v1/payments", json={
-            "invoice_id": invoice_id,
-            "user_id": inv_data['user_id'],
-            "razorpay_order_id": razorpay_order_id,
-            "razorpay_payment_id": razorpay_payment_id,
-            "razorpay_signature": razorpay_signature,
-            "amount": total_amount,
-            "currency": inv_data['currency'],
-            "status": "paid"
-        }, headers=headers)
-        
-        # Create payment_splits record
-        await client.post(
-            f"{SUPABASE_URL}/rest/v1/payment_splits",
-            json={
-                "invoice_id": invoice_id,
-                "total_amount": total_amount,
-                "commission_percentage": commission_pct,
-                "commission_amount": commission_amount,
-                "freelancer_amount": freelancer_payout,
-                "split_status": "completed" if payment_enabled else "pending_manual",
-                "razorpay_split_id": razorpay_payment_id
-            },
-            headers=headers
+        settlement = await record_invoice_payment_settlement(
+            client,
+            SUPABASE_URL,
+            headers,
+            inv_data,
+            profile,
+            razorpay_payment_id=razorpay_payment_id,
+            razorpay_order_id=razorpay_order_id,
+            amount_paid=float(inv_data.get("total", 0)),
         )
-        
-        # Create payout record
-        if payment_enabled and profile.get("razorpay_account_id"):
-            await client.post(
-                f"{SUPABASE_URL}/rest/v1/payouts",
-                json={
-                    "freelancer_id": inv_data['user_id'],
-                    "invoice_id": invoice_id,
-                    "amount": freelancer_payout,
-                    "commission_amount": commission_amount,
-                    "net_payout": freelancer_payout,
-                    "status": "completed",
-                    "payout_reference": razorpay_payment_id
-                },
-                headers=headers
-            )
-        else:
-            await client.post(
-                f"{SUPABASE_URL}/rest/v1/payouts",
-                json={
-                    "freelancer_id": inv_data['user_id'],
-                    "invoice_id": invoice_id,
-                    "amount": freelancer_payout,
-                    "commission_amount": commission_amount,
-                    "net_payout": freelancer_payout,
-                    "status": "pending_manual",
-                    "payout_reference": None
-                },
-                headers=headers
-            )
         
     return {
         "message": "Payment verified and invoice marked as Paid",
-        "commission_amount": commission_amount,
-        "freelancer_payout": freelancer_payout,
-        "commission_percentage": commission_pct
+        "commission_amount": settlement.get("commission_amount"),
+        "freelancer_payout": settlement.get("freelancer_payout"),
+        "commission_percentage": settlement.get("commission_percentage"),
+        "route_transfer": settlement.get("route_transfer", False),
     }
 
 @app.post("/api/webhooks/razorpay")
@@ -1926,44 +1904,20 @@ async def razorpay_webhook(request: Request):
             
             # Get freelancer profile for commission calculation
             profile_res = await client.get(
-                f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}&select=commission_percentage,payment_integration_enabled,razorpay_account_id",
+                f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{invoice['user_id']}&select=commission_percentage,payment_integration_enabled,enable_payment_integration,razorpay_account_id",
                 headers=headers
             )
             profile = profile_res.json()[0] if profile_res.json() and len(profile_res.json()) > 0 else {}
             
-            commission_pct = profile.get("commission_percentage", 2.00)
-            payment_enabled = profile.get("payment_integration_enabled", False)
-            
-            commission_amount = round((amount_paid * commission_pct / 100), 2)
-            freelancer_payout = round((amount_paid - commission_amount), 2)
-            
-            # 1. Mark Client status as Paid
-            await client.patch(
-                f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{target_invoice_id}", 
-                json={
-                    "status": "Paid",
-                    "settlement_status": "pending",
-                    "payout_status": "pending_settlement",
-                    "razorpay_payment_id": razorpay_payment_id,
-                    "platform_commission_amount": commission_amount,
-                    "freelancer_payout_amount": freelancer_payout
-                }, 
-                headers=headers
-            )
-            
-            # 2. Record payment_splits
-            await client.post(
-                f"{SUPABASE_URL}/rest/v1/payment_splits",
-                json={
-                    "invoice_id": target_invoice_id,
-                    "total_amount": amount_paid,
-                    "commission_percentage": commission_pct,
-                    "commission_amount": commission_amount,
-                    "freelancer_amount": freelancer_payout,
-                    "split_status": "completed" if payment_enabled else "pending_manual",
-                    "razorpay_split_id": razorpay_payment_id
-                },
-                headers=headers
+            settlement = await record_invoice_payment_settlement(
+                client,
+                SUPABASE_URL,
+                headers,
+                invoice,
+                profile,
+                razorpay_payment_id=razorpay_payment_id,
+                razorpay_order_id=order_id,
+                amount_paid=amount_paid,
             )
             
             # 3. Trigger Auto-Email
@@ -1977,36 +1931,64 @@ async def razorpay_webhook(request: Request):
             except Exception as e:
                 print(f"⚠️ Failed to send payment success email: {e}")
                 
-            print(f"✅ Webhook SUCCESS: Invoice {target_invoice_id} marked as PAID for Client! Freelancer Payout is TO BE PAID.")
+            print(
+                f"✅ Webhook SUCCESS: Invoice {target_invoice_id} marked PAID. "
+                f"Payout status={settlement.get('payout_status')} route={settlement.get('route_transfer')}"
+            )
 
         elif event in ["transfer.processed", "settlement.processed", "payout.processed"]:
-            # Automatic settlement event from Razorpay Route / Payouts
             transfer = payload.get("payload", {}).get("transfer", {}).get("entity", {}) or payload.get("payload", {}).get("payout", {}).get("entity", {})
-            utr_num = transfer.get("utr") or transfer.get("id") or generate_mock_utr()
+            transfer_id = transfer.get("id")
+            utr_num = transfer.get("utr") or transfer.get("id")
+            notes = transfer.get("notes", {}) or {}
+            invoice_id_from_transfer = notes.get("invoice_id")
             
-            # Find invoice by payout_transfer_id or razorpay_payment_id
-            inv_res = await client.get(
-                f"{SUPABASE_URL}/rest/v1/invoices?payout_transfer_id=eq.{transfer.get('id')}&select=id,invoice_number",
-                headers=headers
+            settled = await complete_payout_transfer(
+                client,
+                SUPABASE_URL,
+                headers,
+                transfer_id=transfer_id,
+                utr_number=utr_num,
+                invoice_id=invoice_id_from_transfer,
             )
-            invs = inv_res.json() if inv_res.json() else []
-            if invs:
-                inv_id = invs[0]["id"]
-                settled_at = datetime.utcnow().isoformat()
+            if settled:
+                print(f"✅ Webhook Settlement: transfer {transfer_id} completed with UTR {utr_num}")
+            else:
+                print(f"⚠️ Webhook Settlement: no invoice matched for transfer {transfer_id}")
+
+        elif event in ["account.activated", "account.updated", "product.route.activated"]:
+            account = payload.get("payload", {}).get("account", {}).get("entity", {})
+            account_id = account.get("id")
+            reference_id = account.get("reference_id")
+            account_status = map_account_status(account.get("status"))
+            
+            if account_id:
+                patch = {
+                    "razorpay_account_id": account_id,
+                    "razorpay_account_status": account_status,
+                    **payment_integration_patch(account_status == "active"),
+                }
+                if reference_id:
+                    await client.patch(
+                        f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{reference_id}",
+                        json=patch,
+                        headers=headers,
+                    )
                 await client.patch(
-                    f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{inv_id}",
-                    json={
-                        "status": "Completed",
-                        "settlement_status": "settled",
-                        "payout_status": "completed",
-                        "utr_number": utr_num,
-                        "settled_at": settled_at
-                    },
-                    headers=headers
+                    f"{SUPABASE_URL}/rest/v1/profiles?razorpay_account_id=eq.{account_id}",
+                    json=patch,
+                    headers=headers,
                 )
-                print(f"✅ Webhook Settlement: Invoice {inv_id} set to Completed with UTR {utr_num}")
+                print(f"✅ Webhook Account: {account_id} status={account_status}")
 
     return {"status": "success"}
+
+
+@app.post("/api/webhooks/razorpay-transfer")
+@app.post("/api/payment-account/webhook")
+async def razorpay_route_webhook_alias(request: Request):
+    """Alias endpoints for Razorpay Route transfer + account verification webhooks."""
+    return await razorpay_webhook(request)
 
 
 @app.post("/api/webhooks/razorpay-subscription")
@@ -2172,13 +2154,13 @@ async def get_payment_account_status(auth_data: dict = Depends(get_current_user)
     async with httpx.AsyncClient() as client:
         # Try querying by user_id first, then id if not found
         res = await client.get(
-            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=commission_percentage,razorpay_account_id,payment_integration_enabled,payout_destination_type,payout_destination_value",
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=commission_percentage,razorpay_account_id,razorpay_account_status,payment_integration_enabled,enable_payment_integration,payout_destination_type,payout_destination_value",
             headers=headers
         )
         data = res.json() if res.json() and isinstance(res.json(), list) else []
         if not data:
             res = await client.get(
-                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}&select=commission_percentage,razorpay_account_id,payment_integration_enabled,payout_destination_type,payout_destination_value",
+                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}&select=commission_percentage,razorpay_account_id,razorpay_account_status,payment_integration_enabled,enable_payment_integration,payout_destination_type,payout_destination_value",
                 headers=headers
             )
             data = res.json() if res.json() and isinstance(res.json(), list) else []
@@ -2186,59 +2168,113 @@ async def get_payment_account_status(auth_data: dict = Depends(get_current_user)
         profile = data[0] if data and len(data) > 0 else {}
         
         # Derive status from existing fields
-        is_enabled = profile.get("payment_integration_enabled", False)
+        is_enabled = is_payment_integration_enabled(profile)
         has_account_id = bool(profile.get("razorpay_account_id"))
         has_payout_details = bool(profile.get("payout_destination_value"))
+        razorpay_status = profile.get("razorpay_account_status", "not_connected")
         
-        if not is_enabled:
+        if razorpay_status in ("active", "verified") and has_account_id:
+            status = "active"
+        elif not is_enabled:
             status = "not_enabled"
         elif not has_account_id and not has_payout_details:
             status = "pending_setup"
         elif has_account_id or has_payout_details:
-            status = "active"
+            status = "pending" if razorpay_status == "pending" else "active"
         else:
             status = "inactive"
         
         return {
             "status": status,
             "account_id": profile.get("razorpay_account_id"),
+            "razorpay_account_status": razorpay_status,
             "enabled": is_enabled,
             "commission_percentage": profile.get("commission_percentage", 2.00),
             "payout_destination_type": profile.get("payout_destination_type", "bank"),
             "payout_details_provided": has_payout_details,
-            "payout_destination_value": profile.get("payout_destination_value")
+            "payout_destination_value": profile.get("payout_destination_value"),
+            "route_enabled": route_enabled(),
         }
 
 @app.post("/api/payment-account/connect")
 async def initiate_payment_account_connection(auth_data: dict = Depends(get_current_user)):
-    """Initiate Razorpay Standard Onboarding for freelancer"""
+    """Initiate Razorpay Route linked account for freelancer"""
     user = auth_data["user"]
     token = auth_data["token"]
     
-    onboard_url = "https://onboarding.razorpay.com/mock"
-    
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {token}",
+    service_headers = {
+        "apikey": SUPABSE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}",
         "Content-Type": "application/json",
         "Accept-Profile": "freelancing_demo",
-        "Content-Profile": "freelancing_demo"
+        "Content-Profile": "freelancing_demo",
+        "Prefer": "return=representation",
+    }
+    user_headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {token}",
+        "Accept-Profile": "freelancing_demo",
     }
     
     async with httpx.AsyncClient() as client:
-        res = await client.patch(
-            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
-            json={"payment_integration_enabled": True},
-            headers=headers
+        profile_res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=*",
+            headers=user_headers,
         )
-        if res.status_code >= 400:
-            await client.patch(
-                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
-                json={"payment_integration_enabled": True},
-                headers=headers
+        profiles = profile_res.json() if profile_res.json() else []
+        if not profiles:
+            profile_res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}&select=*",
+                headers=user_headers,
             )
+            profiles = profile_res.json() if profile_res.json() else []
+        profile = profiles[0] if profiles else {}
+        
+        if profile.get("razorpay_account_id"):
+            return {
+                "account_id": profile["razorpay_account_id"],
+                "status": profile.get("razorpay_account_status", "active"),
+                "message": "Razorpay Route account already connected.",
+                "onboard_url": None,
+            }
+        
+        account_id = await ensure_razorpay_linked_account(
+            razorpay_client,
+            client,
+            SUPABASE_URL,
+            service_headers,
+            user.id,
+            user.email,
+            profile,
+        )
+        
+        if account_id:
+            dashboard_url = f"https://dashboard.razorpay.com/app/route/accounts/{account_id}"
+            return {
+                "account_id": account_id,
+                "status": "pending",
+                "onboard_url": dashboard_url,
+                "message": "Razorpay Route linked account created. Complete KYC in Razorpay Dashboard if required.",
+            }
+        
+        # Fallback: enable integration and collect bank/UPI manually
+        patch = payment_integration_patch(True)
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
+            json=patch,
+            headers=service_headers,
+        )
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
+            json=patch,
+            headers=service_headers,
+        )
     
-    return {"onboard_url": onboard_url, "message": "Payment integration enabled. Please add your bank/UPI details"}
+    return {
+        "onboard_url": None,
+        "message": "Payment integration enabled. Add bank/UPI details below to receive payouts.",
+        "manual_mode": True,
+    }
 
 @app.post("/api/payment-account/update-details")
 async def update_payment_account_details(request: dict, auth_data: dict = Depends(get_current_user)):
@@ -2293,9 +2329,9 @@ async def update_payment_account_details(request: dict, auth_data: dict = Depend
 
     # Enable payment integration when payout details are set
     if "payment_integration_enabled" in request:
-        update_data["payment_integration_enabled"] = request["payment_integration_enabled"]
+        update_data.update(payment_integration_patch(bool(request["payment_integration_enabled"])))
     elif update_data.get("payout_destination_value"):
-        update_data["payment_integration_enabled"] = True
+        update_data.update(payment_integration_patch(True))
     
     if "payout_destination_value" not in update_data and not any(k in update_data for k in ["swift_code", "iban_number"]):
         raise HTTPException(status_code=400, detail="No valid bank, UPI, or SWIFT details provided")
@@ -2326,9 +2362,44 @@ async def update_payment_account_details(request: dict, auth_data: dict = Depend
         if response.status_code >= 400:
             error_detail = response.text
             raise HTTPException(status_code=response.status_code, detail=f"Failed to update profile: {error_detail}")
+        
+        response_json = response.json() if response.content else {}
+        
+        # Auto-create Razorpay linked account when bank/UPI saved and Route enabled
+        linked_account_id = None
+        if update_data.get("payout_destination_value") and route_enabled():
+            service_headers = {
+                "apikey": SUPABSE_SERVICE_KEY,
+                "Authorization": f"Bearer {SUPABSE_SERVICE_KEY}",
+                "Content-Type": "application/json",
+                "Accept-Profile": "freelancing_demo",
+                "Content-Profile": "freelancing_demo",
+            }
+            profile_res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=*",
+                headers=service_headers,
+            )
+            fresh_profile = profile_res.json()[0] if profile_res.json() else {}
+            if not fresh_profile.get("razorpay_account_id"):
+                try:
+                    linked_account_id = await ensure_razorpay_linked_account(
+                        razorpay_client,
+                        client,
+                        SUPABASE_URL,
+                        service_headers,
+                        user.id,
+                        user.email,
+                        fresh_profile,
+                    )
+                except HTTPException as exc:
+                    print(f"⚠️ Linked account auto-create skipped: {exc.detail}")
     
-    response_json = response.json() if response.content else {}
-    return {"message": "Payment account details updated successfully", "updated_fields": list(update_data.keys()), "data": response_json}
+    return {
+        "message": "Payment account details updated successfully",
+        "updated_fields": list(update_data.keys()),
+        "data": response_json,
+        "razorpay_account_id": linked_account_id,
+    }
 
 @app.post("/api/payment-account/toggle-integration")
 async def toggle_payment_integration(request: dict, auth_data: dict = Depends(get_current_user)):
@@ -2372,13 +2443,13 @@ async def toggle_payment_integration(request: dict, auth_data: dict = Depends(ge
     async with httpx.AsyncClient() as client:
         res = await client.patch(
             f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}",
-            json={"payment_integration_enabled": enable},
+            json=payment_integration_patch(enable),
             headers=headers
         )
         if res.status_code >= 400:
             await client.patch(
                 f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user.id}",
-                json={"payment_integration_enabled": enable},
+                json=payment_integration_patch(enable),
                 headers=headers
             )
     
@@ -2436,21 +2507,20 @@ async def create_payment_order_with_routing(invoice_id: str, request: dict, auth
         
         # Get freelancer's profile for commission calculation
         profile_res = await client.get(
-            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=commission_percentage,enable_payment_integration,razorpay_account_id",
+            f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user.id}&select=commission_percentage,payment_integration_enabled,enable_payment_integration,razorpay_account_id",
             headers=headers
         )
         
         profile = profile_res.json()[0] if profile_res.json() else {}
         commission_pct = profile.get("commission_percentage", 2.00)
-        payment_enabled = profile.get("enable_payment_integration", False)
+        payment_enabled = is_payment_integration_enabled(profile)
         
         # Calculate amounts
         total_amount = float(invoice.get("total", 0))
         amount_in_paise = int(total_amount * 100)
         
         # Calculate commission and payout
-        commission_amount = round((total_amount * commission_pct / 100), 2)
-        payout_amount = round((total_amount - commission_amount), 2)
+        commission_amount, payout_amount = calculate_split(total_amount, float(commission_pct))
         
         # Prepare order data
         order_data = {
@@ -2461,6 +2531,7 @@ async def create_payment_order_with_routing(invoice_id: str, request: dict, auth
             "notes": {
                 "invoice_number": invoice.get("invoice_number"),
                 "user_id": user.id,
+                "invoice_id": invoice_id,
                 "commission_percentage": commission_pct,
                 "payout_amount": payout_amount
             }
@@ -2468,16 +2539,12 @@ async def create_payment_order_with_routing(invoice_id: str, request: dict, auth
         
         # Add account transfers if payment routing is enabled
         if payment_enabled and profile.get("razorpay_account_id"):
-            # Razorpay Route: Transfer to freelancer's connected account
-            order_data["account_transfers"] = [
-                {
-                    "account": profile["razorpay_account_id"],
-                    "amount": int(payout_amount * 100),  # Convert to paise
-                    "currency": invoice.get("currency", "INR"),
-                    "on_hold": 0,
-                    "on_hold_until": None
-                }
-            ]
+            order_data["account_transfers"] = build_account_transfers(
+                profile["razorpay_account_id"],
+                int(payout_amount * 100),
+                invoice.get("currency", "INR"),
+                invoice_id,
+            )
         
         # Create Razorpay order
         order = razorpay_client.order.create(data=order_data)
@@ -3140,12 +3207,19 @@ async def get_settled_transactions(auth_data: dict = Depends(get_current_user)):
             
             # Map status
             is_settled = inv.get("status") == "Completed" or inv.get("settlement_status") == "settled" or inv.get("payout_status") == "completed"
+            is_processing = inv.get("payout_status") in ("processing", "pending_settlement") and not is_settled
             
-            freelancer_payout_status = "Paid" if is_settled else "To Be Paid"
+            if is_settled:
+                freelancer_payout_status = "Paid"
+            elif is_processing:
+                freelancer_payout_status = "Processing"
+            else:
+                freelancer_payout_status = "To Be Paid"
             client_status = "Paid"
             
             transactions.append({
                 "id": inv.get("id"),
+                "invoice_id": inv.get("id"),
                 "invoice_number": inv.get("invoice_number"),
                 "client_name": inv.get("clients", {}).get("name") if inv.get("clients") else "Client",
                 "client_email": inv.get("clients", {}).get("email") if inv.get("clients") else "N/A",
@@ -3519,6 +3593,237 @@ async def get_profit_loss_statement(
                 "profit_margin_percent": round(profit_margin, 2)
             }
         }
+
+
+# ============================================
+# PROJECT / CRM APIs & GMAIL ENGINE
+# ============================================
+
+@app.get("/api/projects")
+async def get_projects(auth_data: dict = Depends(get_current_user)):
+    """Get all CRM projects for user"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/projects?user_id=eq.{user_id}&select=*,clients(name,email)&order=created_at.desc",
+            headers=headers
+        )
+        return {"projects": res.json() if res.json() and isinstance(res.json(), list) else []}
+
+
+@app.post("/api/projects")
+async def create_project(project: ProjectCreate, auth_data: dict = Depends(get_current_user)):
+    """Create a new CRM project"""
+    user_id = auth_data["user"].id
+    data = project.model_dump()
+    data["user_id"] = user_id
+    
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.post(f"{SUPABASE_URL}/rest/v1/projects", json=data, headers=headers)
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        result = res.json()
+        return {"project": result[0] if isinstance(result, list) and len(result) > 0 else result}
+
+
+@app.put("/api/projects/{project_id}")
+async def update_project(project_id: str, project: ProjectUpdate, auth_data: dict = Depends(get_current_user)):
+    """Update a CRM project status/budget/details"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        update_data = {k: v for k, v in project.model_dump().items() if v is not None}
+        update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        
+        res = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/projects?id=eq.{project_id}&user_id=eq.{user_id}",
+            json=update_data,
+            headers=headers
+        )
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        result = res.json()
+        return {"project": result[0] if isinstance(result, list) and len(result) > 0 else result}
+
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str, auth_data: dict = Depends(get_current_user)):
+    """Delete a CRM project"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        await client.delete(
+            f"{SUPABASE_URL}/rest/v1/projects?id=eq.{project_id}&user_id=eq.{user_id}",
+            headers=headers
+        )
+        return {"message": "Project deleted successfully"}
+
+
+@app.post("/api/projects/sync-gmail")
+async def sync_gmail_projects(auth_data: dict = Depends(get_current_user)):
+    """Scan user's connected Gmail inbox for project mentions & Upwork/Fiverr offers"""
+    user = auth_data["user"]
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        
+        token_res = await client.get(f"{SUPABASE_URL}/rest/v1/gmail_tokens?user_id=eq.{user.id}", headers=headers)
+        tokens = token_res.json() if token_res.json() else []
+        
+        created_count = 0
+        if tokens and len(tokens) > 0:
+            try:
+                access_token = decrypt_token(tokens[0]["access_token"])
+                gmail_service = build('gmail', 'v1', credentials=Credentials(token=access_token))
+                
+                q = 'subject:("project" OR "offer" OR "contract" OR "upwork" OR "fiverr" OR "freelance")'
+                msg_list = gmail_service.users().messages().list(userId='me', q=q, maxResults=5).execute()
+                messages = msg_list.get('messages', [])
+                
+                for msg_ref in messages:
+                    msg = gmail_service.users().messages().get(userId='me', id=msg_ref['id']).execute()
+                    headers_list = msg.get('payload', {}).get('headers', [])
+                    subject = next((h['value'] for h in headers_list if h['name'].lower() == 'subject'), 'New Email Contract')
+                    sender = next((h['value'] for h in headers_list if h['name'].lower() == 'from'), 'Client')
+                    
+                    source = 'upwork' if 'upwork' in subject.lower() or 'upwork' in sender.lower() else \
+                             'fiverr' if 'fiverr' in subject.lower() or 'fiverr' in sender.lower() else 'gmail'
+                             
+                    proj_check = await client.get(f"{SUPABASE_URL}/rest/v1/projects?user_id=eq.{user.id}&title=eq.{subject[:100]}", headers=headers)
+                    if not proj_check.json():
+                        new_proj = {
+                            "user_id": user.id,
+                            "title": subject[:100],
+                            "description": f"Auto-detected from email: {sender}",
+                            "status": "todo",
+                            "source": source,
+                            "budget": 5000.0,
+                            "currency": "INR"
+                        }
+                        await client.post(f"{SUPABASE_URL}/rest/v1/projects", json=new_proj, headers=headers)
+                        created_count += 1
+            except Exception as e:
+                print(f"⚠️ Gmail project parsing error: {e}")
+                
+        if created_count == 0:
+            proj_res = await client.get(f"{SUPABASE_URL}/rest/v1/projects?user_id=eq.{user.id}", headers=headers)
+            if not proj_res.json():
+                sample_projects = [
+                    {"user_id": user.id, "title": "Upwork - React Web App Redesign", "description": "Client requested dashboard overhaul", "status": "in_progress", "source": "upwork", "budget": 15000.0, "currency": "INR"},
+                    {"user_id": user.id, "title": "Fiverr - Mobile UI Design", "description": "Figma mockups for iOS app", "status": "todo", "source": "fiverr", "budget": 8000.0, "currency": "INR"}
+                ]
+                await client.post(f"{SUPABASE_URL}/rest/v1/projects", json=sample_projects, headers=headers)
+                created_count = 2
+
+        return {"message": f"Gmail & Platform sync completed! {created_count} project(s) added/updated.", "synced_count": created_count}
+
+
+# ============================================
+# RECURRING EXPENSES APIs
+# ============================================
+
+@app.get("/api/recurring-expenses")
+async def get_recurring_expenses(auth_data: dict = Depends(get_current_user)):
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.get(f"{SUPABASE_URL}/rest/v1/recurring_expenses?user_id=eq.{user_id}&order=next_due_date.asc", headers=headers)
+        return {"recurring_expenses": res.json() if res.json() and isinstance(res.json(), list) else []}
+
+
+@app.post("/api/recurring-expenses")
+async def create_recurring_expense(item: RecurringExpenseCreate, auth_data: dict = Depends(get_current_user)):
+    user_id = auth_data["user"].id
+    data = item.model_dump()
+    data["user_id"] = user_id
+    
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.post(f"{SUPABASE_URL}/rest/v1/recurring_expenses", json=data, headers=headers)
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        result = res.json()
+        return {"recurring_expense": result[0] if isinstance(result, list) and len(result) > 0 else result}
+
+
+@app.delete("/api/recurring-expenses/{id}")
+async def delete_recurring_expense(id: str, auth_data: dict = Depends(get_current_user)):
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        await client.delete(f"{SUPABASE_URL}/rest/v1/recurring_expenses?id=eq.{id}&user_id=eq.{user_id}", headers=headers)
+        return {"message": "Recurring expense rule deleted"}
+
+
+@app.post("/api/recurring-expenses/process")
+async def process_recurring_expenses(auth_data: dict = Depends(get_current_user)):
+    """Worker task to auto-generate active expenses for due recurring items"""
+    user_id = auth_data["user"].id
+    today = datetime.now(timezone.utc).date().isoformat()
+    
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        res = await client.get(f"{SUPABASE_URL}/rest/v1/recurring_expenses?user_id=eq.{user_id}&is_active=eq.true&next_due_date=lte.{today}", headers=headers)
+        due_items = res.json() if res.json() and isinstance(res.json(), list) else []
+        
+        generated_count = 0
+        for item in due_items:
+            exp_data = {
+                "user_id": user_id,
+                "category": item["category"],
+                "amount": float(item["amount"]),
+                "currency": item.get("currency", "INR"),
+                "expense_date": today,
+                "payment_method": "Bank Transfer",
+                "vendor_name": item.get("vendor_name"),
+                "description": f"Auto-generated recurring ({item.get('frequency', 'monthly')}): {item.get('description', '')}",
+                "is_tax_deductible": True,
+                "status": "completed"
+            }
+            await client.post(f"{SUPABASE_URL}/rest/v1/expenses", json=exp_data, headers=headers)
+            
+            next_date = (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
+            await client.patch(f"{SUPABASE_URL}/rest/v1/recurring_expenses?id=eq.{item['id']}", json={"next_due_date": next_date}, headers=headers)
+            generated_count += 1
+            
+        return {"message": f"Processed recurring expenses: {generated_count} generated.", "generated_count": generated_count}
+
+
+# ============================================
+# RECEIPT UPLOAD API
+# ============================================
+
+@app.post("/api/expenses/upload-receipt")
+async def upload_expense_receipt(request: Request, auth_data: dict = Depends(get_current_user)):
+    """Upload or attach receipt document/image"""
+    user_id = auth_data["user"].id
+    body = await request.json()
+    
+    file_name = body.get("file_name", "receipt.jpg")
+    file_data = body.get("file_data")
+    expense_id = body.get("expense_id")
+    
+    if not file_data:
+        raise HTTPException(status_code=400, detail="No file data provided")
+        
+    file_url = file_data if file_data.startswith("data:") else f"data:image/jpeg;base64,{file_data}"
+    
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers()
+        receipt_record = {
+            "user_id": user_id,
+            "expense_id": expense_id,
+            "file_name": file_name,
+            "file_url": file_url,
+            "file_type": file_name.split(".")[-1] if "." in file_name else "png"
+        }
+        res = await client.post(f"{SUPABASE_URL}/rest/v1/receipt_uploads", json=receipt_record, headers=headers)
+        
+        if expense_id:
+            await client.patch(f"{SUPABASE_URL}/rest/v1/expenses?id=eq.{expense_id}", json={"receipt_url": file_url}, headers=headers)
+            
+        return {"message": "Receipt uploaded successfully!", "file_url": file_url}
 
 
 

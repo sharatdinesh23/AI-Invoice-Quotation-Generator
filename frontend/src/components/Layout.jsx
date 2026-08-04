@@ -168,20 +168,32 @@ export default function Layout() {
           <Link to="/products" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/products')}`}>
             📦 Products & Services
           </Link>
+          <Link to="/projects" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/projects')}`}>
+            📌 Projects (Kanban)
+          </Link>
           <Link to="/invoices" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/invoices')}`}>
             🧾 Invoices
           </Link>
           <Link to="/recurring" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/recurring')}`}>
-            🔄 Recurring
+            🔄 Recurring Invoices
           </Link>
           <Link to="/quotations" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/quotations')}`}>
-            Quotations
+            📜 Quotations
           </Link>
           <Link to="/expenses" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/expenses')}`}>
             💵 Expenses
           </Link>
+          <Link to="/recurring-expenses" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/recurring-expenses')}`}>
+            🔁 Recurring Expenses
+          </Link>
+          <Link to="/analytics" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/analytics')}`}>
+            📈 Analytics & P&L
+          </Link>
           <Link to="/transactions" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/transactions')}`}>
             💸 Transactions
+          </Link>
+          <Link to="/commission-dashboard" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/commission-dashboard')}`}>
+            🏛️ Platform Commission
           </Link>
           <Link to="/payment-settings" className={`flex items-center p-3 rounded-lg transition ${getLinkClass('/payment-settings')}`}>
             💳 Payment Settings

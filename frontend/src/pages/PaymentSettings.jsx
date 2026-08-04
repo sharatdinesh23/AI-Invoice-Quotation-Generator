@@ -123,15 +123,23 @@ export default function PaymentSettings() {
       })
       const data = await res.json()
       
-      if (data.onboard_url && data.onboard_url !== 'https://onboarding.razorpay.com/mock') {
-        window.open(data.onboard_url, '_blank')
-        alert('Please complete the onboarding process in the new window')
-      } else {
-        alert('Razorpay Route is active. Please add your bank/UPI and SWIFT details manually below.')
+      if (!res.ok) {
+        alert(data.detail || 'Failed to connect Razorpay Route account')
+        return
       }
+
+      if (data.onboard_url) {
+        window.open(data.onboard_url, '_blank')
+        alert(data.message || 'Razorpay Route account created. Complete verification in the opened dashboard.')
+      } else if (data.account_id) {
+        alert(data.message || `Route account connected: ${data.account_id}`)
+      } else {
+        alert(data.message || 'Payment integration enabled. Add bank/UPI details below.')
+      }
+      fetchAccountStatus()
     } catch (error) {
-      const errData = await error.response?.json()
-      alert(errData?.detail || 'Failed to initiate account connection')
+      console.error('Error connecting account:', error)
+      alert('Failed to initiate account connection')
     }
   }
   
@@ -250,12 +258,21 @@ export default function PaymentSettings() {
       {/* Account Status Card */}
       <div className="bg-white rounded-xl shadow border border-gray-200 p-6">
         <h2 className="text-xl font-semibold mb-4 text-gray-800">Payment Routing Status</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="p-4 rounded-lg bg-gray-50 border border-gray-100">
             <p className="text-xs font-semibold text-gray-500 uppercase">Connection Status</p>
             <p className={`text-base font-bold mt-1 px-2.5 py-1 rounded inline-block ${getStatusColor(accountStatus.status)}`}>
               {accountStatus.status.replace('_', ' ').toUpperCase()}
             </p>
+          </div>
+          <div className="p-4 rounded-lg bg-gray-50 border border-gray-100">
+            <p className="text-xs font-semibold text-gray-500 uppercase">Razorpay Route Account</p>
+            <p className="text-sm font-mono mt-1 text-gray-800 break-all">
+              {accountStatus.account_id || 'Not connected'}
+            </p>
+            {accountStatus.razorpay_account_status && (
+              <p className="text-xs text-gray-500 mt-1">KYC: {accountStatus.razorpay_account_status}</p>
+            )}
           </div>
           <div className="p-4 rounded-lg bg-gray-50 border border-gray-100">
             <p className="text-xs font-semibold text-gray-500 uppercase">Payment Gateway Integration</p>

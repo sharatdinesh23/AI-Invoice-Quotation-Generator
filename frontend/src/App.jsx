@@ -21,6 +21,10 @@ import CreateQuotation from './pages/CreateQuotation'
 import PublicInvoiceView from './pages/PublicInvoiceView'
 import Landing from './pages/Landing'
 import Expenses from './pages/Expenses'
+import Projects from './pages/Projects'
+import Analytics from './pages/Analytics'
+import CommissionDashboard from './pages/CommissionDashboard'
+import RecurringExpenses from './pages/RecurringExpenses'
 
 function App() {
   const [session, setSession] = useState(null)
@@ -70,6 +74,10 @@ function App() {
             <Route path="/quotations/new" element={<CreateQuotation />} />
             <Route path="/quotations/:id/edit" element={<CreateQuotation />} />
             <Route path="/expenses" element={<Expenses />} />
+            <Route path="/projects" element={<Projects />} />
+            <Route path="/analytics" element={<Analytics />} />
+            <Route path="/commission-dashboard" element={<CommissionDashboard />} />
+            <Route path="/recurring-expenses" element={<RecurringExpenses />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/payment-settings" element={<PaymentSettings />} />
             <Route path="/transactions" element={<Transactions />} />
