@@ -185,6 +185,36 @@ const Projects = () => {
     }
   };
 
+  const handleDeleteMilestone = async (milestoneId) => {
+    if (!selectedProject || !window.confirm('Delete this milestone?')) return;
+    try {
+      const res = await api.deleteMilestone(selectedProject.id, milestoneId);
+      if (res.ok) {
+        openProjectDetail(selectedProject);
+      }
+    } catch (err) {
+      alert('Failed to delete milestone');
+    }
+  };
+
+  const handleEditMilestone = async (m) => {
+    const newTitle = window.prompt('Milestone title:', m.title);
+    if (!newTitle) return;
+    const newAmt = window.prompt('Milestone amount:', m.amount);
+    if (!newAmt) return;
+    try {
+      const res = await api.updateMilestone(selectedProject.id, m.id, {
+        title: newTitle,
+        amount: parseFloat(newAmt)
+      });
+      if (res.ok) {
+        openProjectDetail(selectedProject);
+      }
+    } catch (err) {
+      alert('Failed to update milestone');
+    }
+  };
+
   const handleMilestoneInvoice = async (milestoneId) => {
     try {
       const res = await api.createInvoiceFromMilestone(selectedProject.id, milestoneId);
@@ -474,15 +504,19 @@ const Projects = () => {
             <ul className="space-y-2 mb-6">
               {milestones.map(m => (
                 <li key={m.id} className="border rounded-lg p-3 text-sm dark:border-gray-600">
-                  <div className="flex justify-between">
+                  <div className="flex justify-between items-start">
                     <span className="font-semibold">{m.title}</span>
-                    <span>{m.currency} {Number(m.amount || 0).toLocaleString()}</span>
+                    <span className="font-bold">{m.currency} {Number(m.amount || 0).toLocaleString()}</span>
                   </div>
-                  <div className="flex justify-between items-center mt-2">
+                  <div className="flex justify-between items-center mt-2 pt-1 border-t border-gray-100 dark:border-gray-700">
                     <span className="text-xs text-gray-500 capitalize">{m.status}</span>
-                    {m.status !== 'invoiced' && (
-                      <button onClick={() => handleMilestoneInvoice(m.id)} className="text-xs text-blue-600 font-bold">→ Invoice</button>
-                    )}
+                    <div className="flex gap-2 items-center">
+                      <button onClick={() => handleEditMilestone(m)} className="text-xs text-gray-600 hover:text-gray-900 dark:text-gray-400 font-medium">✏️ Edit</button>
+                      <button onClick={() => handleDeleteMilestone(m.id)} className="text-xs text-red-500 hover:text-red-700 font-medium">🗑️</button>
+                      {m.status !== 'invoiced' && (
+                        <button onClick={() => handleMilestoneInvoice(m.id)} className="text-xs text-blue-600 font-bold ml-1">→ Invoice</button>
+                      )}
+                    </div>
                   </div>
                 </li>
               ))}

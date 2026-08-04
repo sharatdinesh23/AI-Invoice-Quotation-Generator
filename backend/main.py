@@ -1357,9 +1357,10 @@ async def send_invoice_email(invoice_id: str, request: dict, auth_data: dict = D
         message.attach(msg_text)
         
         # 5. FETCH THE PROFESSIONAL PDF from our own backend endpoint!
-        print(f"Fetching professional PDF for invoice {invoice_id}...")
+        backend_base = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
+        print(f"Fetching professional PDF for invoice {invoice_id} from {backend_base}...")
         pdf_res = await client.get(
-            f"http://localhost:8000/api/invoices/{invoice_id}/pdf",
+            f"{backend_base}/api/invoices/{invoice_id}/pdf",
             headers={"Authorization": f"Bearer {token}"} # Pass the user's token to authenticate
         )
         pdf_bytes = pdf_res.content # Get the actual PDF bytes
@@ -4266,15 +4267,35 @@ async def process_recurring_expenses(auth_data: dict = Depends(get_current_user)
             }
             await client.post(f"{SUPABASE_URL}/rest/v1/expenses", json=exp_data, headers=headers)
             
-            next_date = (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
+            
+            freq = (item.get("frequency") or "monthly").lower()
+            days = 1 if freq == "daily" else 7 if freq == "weekly" else 365 if freq == "yearly" else 30
+            next_date = (datetime.now(timezone.utc).date() + timedelta(days=days)).isoformat()
             await client.patch(f"{SUPABASE_URL}/rest/v1/recurring_expenses?id=eq.{item['id']}", json={"next_due_date": next_date}, headers=headers)
             generated_count += 1
             
         return {"message": f"Processed recurring expenses: {generated_count} generated.", "generated_count": generated_count}
 
 
+@app.patch("/api/recurring-expenses/{rule_id}/toggle")
+async def toggle_recurring_expense_rule(rule_id: str, request: Request, auth_data: dict = Depends(get_current_user)):
+    """Toggle recurring expense rule active status"""
+    user_id = auth_data["user"].id
+    body = await request.json()
+    is_active = bool(body.get("is_active", True))
+
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers(auth_data["token"])
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/recurring_expenses?id=eq.{rule_id}&user_id=eq.{user_id}",
+            json={"is_active": is_active},
+            headers=headers
+        )
+        return {"message": f"Rule is now {'active' if is_active else 'inactive'}", "is_active": is_active}
+
+
 # ============================================
-# RECEIPT UPLOAD API
+# RECEIPT UPLOAD & STREAMING API
 # ============================================
 
 @app.post("/api/expenses/upload-receipt")
@@ -4301,12 +4322,363 @@ async def upload_expense_receipt(request: Request, auth_data: dict = Depends(get
             "file_url": file_url,
             "file_type": file_name.split(".")[-1] if "." in file_name else "png"
         }
-        res = await client.post(f"{SUPABASE_URL}/rest/v1/receipt_uploads", json=receipt_record, headers=headers)
+        await client.post(f"{SUPABASE_URL}/rest/v1/receipt_uploads", json=receipt_record, headers=headers)
         
         if expense_id:
             await client.patch(f"{SUPABASE_URL}/rest/v1/expenses?id=eq.{expense_id}", json={"receipt_url": file_url}, headers=headers)
             
         return {"message": "Receipt uploaded successfully!", "file_url": file_url}
+
+
+@app.get("/api/expenses/{expense_id}/receipt")
+async def get_expense_receipt(expense_id: str, auth_data: dict = Depends(get_current_user)):
+    """Get stored receipt for expense"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers(auth_data["token"])
+        res = await client.get(f"{SUPABASE_URL}/rest/v1/expenses?id=eq.{expense_id}&user_id=eq.{user_id}", headers=headers)
+        expenses = res.json() if res.json() else []
+        if not expenses or not expenses[0].get("receipt_url"):
+            raise HTTPException(status_code=404, detail="Receipt not found for this expense")
+        return {"expense_id": expense_id, "receipt_url": expenses[0]["receipt_url"]}
+
+
+# ============================================
+# REFUND ENDPOINT (PHASE A)
+# ============================================
+
+@app.post("/api/invoices/{invoice_id}/refund")
+async def refund_invoice_endpoint(invoice_id: str, request: Request, auth_data: dict = Depends(get_current_user)):
+    """Process refund for paid invoice"""
+    user_id = auth_data["user"].id
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    reason = body.get("reason", "Customer request")
+
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers(auth_data["token"])
+        inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}&user_id=eq.{user_id}", headers=headers)
+        invs = inv_res.json() if inv_res.json() else []
+        if not invs:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        
+        payment_id = invs[0].get("razorpay_payment_id")
+        if payment_id and 'razorpay_client' in globals() and razorpay_client:
+            try:
+                razorpay_client.payment.refund(payment_id, {"notes": {"reason": reason}})
+            except Exception as exc:
+                print(f"Razorpay refund notice: {exc}")
+
+        await client.patch(
+            f"{SUPABASE_URL}/rest/v1/invoices?id=eq.{invoice_id}",
+            json={"status": "Refunded", "settlement_status": "refunded", "payout_status": "refunded"},
+            headers=headers
+        )
+        return {"message": "Invoice status updated to Refunded.", "invoice_id": invoice_id}
+
+
+# ============================================
+# PHASE 3 ADVANCED ANALYTICS ENDPOINTS
+# ============================================
+
+@app.get("/api/analytics/revenue-trends")
+async def get_revenue_trends(months: int = 6, auth_data: dict = Depends(get_current_user)):
+    """Monthly Revenue vs Expense Trend for requested months"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers(auth_data["token"])
+        
+        # Fetch invoices
+        inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user_id}&status=in.(Paid,Completed)", headers=headers)
+        invoices = inv_res.json() if inv_res.json() and isinstance(inv_res.json(), list) else []
+
+        # Fetch expenses
+        exp_res = await client.get(f"{SUPABASE_URL}/rest/v1/expenses?user_id=eq.{user_id}", headers=headers)
+        expenses = exp_res.json() if exp_res.json() and isinstance(exp_res.json(), list) else []
+
+        # Group by Month
+        now = datetime.now(timezone.utc)
+        monthly_data = {}
+        for i in range(months - 1, -1, -1):
+            m_date = now - timedelta(days=i * 30)
+            m_key = m_date.strftime("%b %Y")
+            monthly_data[m_key] = {"month": m_key, "revenue": 0.0, "expenses": 0.0, "profit": 0.0}
+
+        for inv in invoices:
+            dt_str = inv.get("created_at") or inv.get("issue_date")
+            if dt_str:
+                try:
+                    dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    m_key = dt.strftime("%b %Y")
+                    if m_key in monthly_data:
+                        monthly_data[m_key]["revenue"] += float(inv.get("total", 0))
+                except Exception:
+                    pass
+
+        for exp in expenses:
+            dt_str = exp.get("expense_date") or exp.get("created_at")
+            if dt_str:
+                try:
+                    dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    m_key = dt.strftime("%b %Y")
+                    if m_key in monthly_data:
+                        monthly_data[m_key]["expenses"] += float(exp.get("amount", 0))
+                except Exception:
+                    pass
+
+        trends = []
+        for m_key, val in monthly_data.items():
+            val["profit"] = round(val["revenue"] - val["expenses"], 2)
+            val["revenue"] = round(val["revenue"], 2)
+            val["expenses"] = round(val["expenses"], 2)
+            trends.append(val)
+
+        return {"revenue_trends": trends}
+
+
+@app.get("/api/analytics/client-revenue")
+async def get_client_revenue(auth_data: dict = Depends(get_current_user)):
+    """Breakdown of total revenue earned per client"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers(auth_data["token"])
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user_id}&status=in.(Paid,Completed)&select=total,client_id,clients(name)",
+            headers=headers
+        )
+        invoices = res.json() if res.json() and isinstance(res.json(), list) else []
+        
+        client_map = {}
+        total_rev = 0.0
+        for inv in invoices:
+            amt = float(inv.get("total", 0))
+            total_rev += amt
+            client_obj = inv.get("clients") or {}
+            c_name = client_obj.get("name") if isinstance(client_obj, dict) else "Direct Client"
+            if not c_name:
+                c_name = "Unassigned Client"
+            client_map[c_name] = client_map.get(c_name, 0.0) + amt
+
+        breakdown = [
+            {
+                "client_name": name,
+                "revenue": round(rev, 2),
+                "percentage": round((rev / total_rev * 100), 1) if total_rev > 0 else 0
+            }
+            for name, rev in sorted(client_map.items(), key=lambda x: x[1], reverse=True)
+        ]
+
+        return {"client_revenue": breakdown, "total_revenue": round(total_rev, 2)}
+
+
+@app.get("/api/analytics/platform-earnings")
+async def get_platform_earnings(auth_data: dict = Depends(get_current_user)):
+    """Revenue breakdown by platform source (Gmail, Upwork, Fiverr, Direct)"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers(auth_data["token"])
+        
+        # Fetch projects to link platform source
+        proj_res = await client.get(f"{SUPABASE_URL}/rest/v1/projects?user_id=eq.{user_id}", headers=headers)
+        projects = {p["id"]: p.get("source", "manual") for p in (proj_res.json() if proj_res.json() else []) if "id" in p}
+
+        inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user_id}&status=in.(Paid,Completed)", headers=headers)
+        invoices = inv_res.json() if inv_res.json() and isinstance(inv_res.json(), list) else []
+
+        platform_totals = {"gmail": 0.0, "upwork": 0.0, "fiverr": 0.0, "manual": 0.0}
+        total_rev = 0.0
+
+        for inv in invoices:
+            amt = float(inv.get("total", 0))
+            total_rev += amt
+            proj_id = inv.get("project_id")
+            source = projects.get(proj_id, "manual") if proj_id else "manual"
+            if source not in platform_totals:
+                platform_totals[source] = 0.0
+            platform_totals[source] += amt
+
+        platforms = [
+            {
+                "platform": p_name.title(),
+                "revenue": round(amt, 2),
+                "percentage": round((amt / total_rev * 100), 1) if total_rev > 0 else 0
+            }
+            for p_name, amt in platform_totals.items()
+        ]
+
+        return {"platform_earnings": platforms, "total_revenue": round(total_rev, 2)}
+
+
+@app.get("/api/analytics/aging-report")
+async def get_aging_report(auth_data: dict = Depends(get_current_user)):
+    """Receivables aging report for unpaid invoices grouped by overdue days"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers(auth_data["token"])
+        res = await client.get(
+            f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user_id}&status=in.(Sent,Pending,Overdue)&select=id,invoice_number,total,due_date,clients(name)",
+            headers=headers
+        )
+        unpaid = res.json() if res.json() and isinstance(res.json(), list) else []
+
+        today = datetime.now(timezone.utc).date()
+        buckets = {
+            "current": {"label": "Current / Not Due", "amount": 0.0, "count": 0},
+            "1_30": {"label": "1 - 30 Days Overdue", "amount": 0.0, "count": 0},
+            "31_60": {"label": "31 - 60 Days Overdue", "amount": 0.0, "count": 0},
+            "61_90": {"label": "61 - 90 Days Overdue", "amount": 0.0, "count": 0},
+            "90_plus": {"label": "90+ Days Overdue", "amount": 0.0, "count": 0},
+        }
+
+        total_receivables = 0.0
+
+        for inv in unpaid:
+            amt = float(inv.get("total", 0))
+            total_receivables += amt
+            due_str = inv.get("due_date")
+            days_overdue = 0
+            if due_str:
+                try:
+                    due_d = datetime.fromisoformat(due_str.split("T")[0]).date()
+                    days_overdue = (today - due_d).days
+                except Exception:
+                    pass
+
+            if days_overdue <= 0:
+                b_key = "current"
+            elif days_overdue <= 30:
+                b_key = "1_30"
+            elif days_overdue <= 60:
+                b_key = "31_60"
+            elif days_overdue <= 90:
+                b_key = "61_90"
+            else:
+                b_key = "90_plus"
+
+            buckets[b_key]["amount"] += amt
+            buckets[b_key]["count"] += 1
+
+        for b in buckets.values():
+            b["amount"] = round(b["amount"], 2)
+
+        return {"aging_buckets": buckets, "total_receivables": round(total_receivables, 2)}
+
+
+@app.get("/api/analytics/export-pdf")
+async def export_analytics_pdf(auth_data: dict = Depends(get_current_user)):
+    """Export complete Profit & Loss summary report for print / PDF download"""
+    user_id = auth_data["user"].id
+    async with httpx.AsyncClient() as client:
+        headers = get_supabase_headers(auth_data["token"])
+        inv_res = await client.get(f"{SUPABASE_URL}/rest/v1/invoices?user_id=eq.{user_id}&status=in.(Paid,Completed)", headers=headers)
+        exp_res = await client.get(f"{SUPABASE_URL}/rest/v1/expenses?user_id=eq.{user_id}", headers=headers)
+        
+        invoices = inv_res.json() if inv_res.json() and isinstance(inv_res.json(), list) else []
+        expenses = exp_res.json() if exp_res.json() and isinstance(exp_res.json(), list) else []
+
+        rev = sum(float(i.get("total", 0)) for i in invoices)
+        exp = sum(float(e.get("amount", 0)) for e in expenses)
+        profit = rev - exp
+
+        report_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Profit & Loss Financial Statement</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; padding: 40px; color: #333; }}
+                h1 {{ color: #1e293b; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; }}
+                .summary {{ display: flex; justify-content: space-between; margin: 30px 0; background: #f8fafc; padding: 20px; border-radius: 8px; }}
+                .metric {{ text-align: center; }}
+                .metric .val {{ font-size: 24px; font-weight: bold; margin-top: 5px; }}
+                .green {{ color: #16a34a; }}
+                .red {{ color: #dc2626; }}
+                .blue {{ color: #2563eb; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+                th, td {{ padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: left; }}
+                th {{ background: #f1f5f9; }}
+            </style>
+        </head>
+        <body>
+            <h1>Profit & Loss Statement</h1>
+            <p>Generated on: {datetime.now(timezone.utc).strftime('%B %d, %Y')}</p>
+            <div class="summary">
+                <div class="metric">
+                    <div>Gross Revenue</div>
+                    <div class="val green">₹{rev:,.2f}</div>
+                </div>
+                <div class="metric">
+                    <div>Total Expenses</div>
+                    <div class="val red">₹{exp:,.2f}</div>
+                </div>
+                <div class="metric">
+                    <div>Net Profit</div>
+                    <div class="val blue">₹{profit:,.2f}</div>
+                </div>
+            </div>
+            <h2>Breakdown Summary</h2>
+            <table>
+                <thead>
+                    <tr><th>Type</th><th>Total Amount</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>Total Paid Invoices</td><td>₹{rev:,.2f}</td></tr>
+                    <tr><td>Total Business Expenses</td><td>₹{exp:,.2f}</td></tr>
+                    <tr><td><strong>Net Operating Profit</strong></td><td><strong>₹{profit:,.2f}</strong></td></tr>
+                </tbody>
+            </table>
+        </body>
+        </html>
+        """
+        return StreamingResponse(io.BytesIO(report_html.encode('utf-8')), media_type="text/html")
+
+
+# ============================================
+# APSCHEDULER STARTUP WORKERS
+# ============================================
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+scheduler = AsyncIOScheduler()
+
+async def auto_process_due_recurring_expenses():
+    """Background cron worker: auto-process due recurring expenses."""
+    headers = get_supabase_headers()
+    today = datetime.now(timezone.utc).date().isoformat()
+    async with httpx.AsyncClient() as client:
+        res = await client.get(f"{SUPABASE_URL}/rest/v1/recurring_expenses?is_active=eq.true&next_due_date=lte.{today}", headers=headers)
+        items = res.json() if res.json() and isinstance(res.json(), list) else []
+        for item in items:
+            exp_data = {
+                "user_id": item["user_id"],
+                "category": item["category"],
+                "amount": float(item["amount"]),
+                "currency": item.get("currency", "INR"),
+                "expense_date": today,
+                "payment_method": "Bank Transfer",
+                "vendor_name": item.get("vendor_name"),
+                "description": f"Auto-generated recurring ({item.get('frequency', 'monthly')}): {item.get('description', '')}",
+                "is_tax_deductible": True,
+                "status": "completed"
+            }
+            await client.post(f"{SUPABASE_URL}/rest/v1/expenses", json=exp_data, headers=headers)
+            freq = (item.get("frequency") or "monthly").lower()
+            days = 1 if freq == "daily" else 7 if freq == "weekly" else 365 if freq == "yearly" else 30
+            next_date = (datetime.now(timezone.utc).date() + timedelta(days=days)).isoformat()
+            await client.patch(f"{SUPABASE_URL}/rest/v1/recurring_expenses?id=eq.{item['id']}", json={"next_due_date": next_date}, headers=headers)
+
+@app.on_event("startup")
+async def start_background_schedulers():
+    try:
+        if not scheduler.running:
+            scheduler.add_job(auto_process_due_recurring_expenses, 'cron', hour=8, minute=0)
+            scheduler.start()
+            print("⏰ APScheduler background workers running.")
+    except Exception as e:
+        print(f"Scheduler startup note: {e}")
+
 
 
 

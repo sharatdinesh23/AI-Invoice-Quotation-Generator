@@ -13,6 +13,7 @@ const Expenses = () => {
   const [filterCategory, setFilterCategory] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
+  const [viewingReceipt, setViewingReceipt] = useState(null);
 
   const [formData, setFormData] = useState({
     category: '', 
@@ -100,6 +101,20 @@ const Expenses = () => {
       receipt_url: ''
     });
     setEditingExpense(null);
+  };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      alert('File size exceeds 5MB limit.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setFormData(prev => ({ ...prev, receipt_url: reader.result }));
+    };
+    reader.readAsDataURL(file);
   };
 
   const openNewModal = () => { 
@@ -315,6 +330,14 @@ const Expenses = () => {
                       {e.currency || 'INR'} {Number(e.amount || 0).toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-right">
+                      {e.receipt_url && (
+                        <button
+                          onClick={() => setViewingReceipt(e.receipt_url)}
+                          className="text-xs bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300 font-bold px-2 py-1 rounded mr-2 hover:bg-indigo-100"
+                        >
+                          📎 Receipt
+                        </button>
+                      )}
                       <button onClick={() => handleEdit(e)} className="text-blue-600 hover:text-blue-800 font-medium mr-3">Edit</button>
                       <button onClick={() => handleDelete(e.id)} className="text-red-600 hover:text-red-800 font-medium">Delete</button>
                     </td>
@@ -457,6 +480,26 @@ const Expenses = () => {
                   />
                 </div>
 
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase mb-1">
+                    Receipt File (Image / PDF)
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*,application/pdf"
+                    onChange={handleFileSelect}
+                    className="w-full text-xs text-gray-500 border border-gray-300 dark:border-gray-600 rounded-lg p-2 dark:bg-gray-700"
+                  />
+                  {formData.receipt_url && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <span className="text-xs text-green-600 font-semibold">✓ Receipt Attached</span>
+                      {formData.receipt_url.startsWith('data:image') && (
+                        <img src={formData.receipt_url} alt="Receipt thumbnail" className="h-10 w-10 object-cover rounded border" />
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-2 pt-2">
                   <input
                     type="checkbox"
@@ -487,6 +530,25 @@ const Expenses = () => {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* View Full Receipt Modal */}
+        {viewingReceipt && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setViewingReceipt(null)}>
+            <div className="bg-white dark:bg-gray-800 rounded-xl max-w-2xl w-full p-4 shadow-2xl relative max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center pb-2 border-b mb-3">
+                <h4 className="font-bold text-gray-900 dark:text-white">Expense Receipt Document</h4>
+                <button onClick={() => setViewingReceipt(null)} className="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+              </div>
+              <div className="flex-1 overflow-auto flex justify-center items-center">
+                {viewingReceipt.startsWith('data:application/pdf') ? (
+                  <iframe src={viewingReceipt} title="Receipt PDF" className="w-full h-96 rounded border" />
+                ) : (
+                  <img src={viewingReceipt} alt="Full Receipt" className="max-h-[70vh] object-contain rounded" />
+                )}
+              </div>
             </div>
           </div>
         )}

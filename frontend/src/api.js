@@ -1,6 +1,8 @@
 // frontend/src/api.js
 import { supabase } from './supabaseClient'
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
+
 // This helper automatically attaches the user's token to every request to our FastAPI backend
 export const apiFetch = async (endpoint, options = {}) => {
   const { data: { session } } = await supabase.auth.getSession()
@@ -11,7 +13,7 @@ export const apiFetch = async (endpoint, options = {}) => {
     ...options.headers,
   }
 
-  const response = await fetch(`http://127.0.0.1:8000${endpoint}`, {
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
     ...options,
     headers,
   })
@@ -30,6 +32,7 @@ export const getTransactions = () => apiFetch('/api/transactions');
 export const getPlatformTransactions = () => apiFetch('/api/admin/platform-transactions');
 export const getMeContext = () => apiFetch('/api/me/context');
 export const retryInvoicePayout = (invoiceId) => apiFetch(`/api/invoices/${invoiceId}/retry-payout`, { method: 'POST' });
+export const refundInvoice = (invoiceId, reason = '') => apiFetch(`/api/invoices/${invoiceId}/refund`, { method: 'POST', body: JSON.stringify({ reason }) });
 export const getProjectDetail = (id) => apiFetch(`/api/projects/${id}`);
 export const getProjectMilestones = (projectId) => apiFetch(`/api/projects/${projectId}/milestones`);
 export const createMilestone = (projectId, data) => apiFetch(`/api/projects/${projectId}/milestones`, { method: 'POST', body: JSON.stringify(data) });
@@ -63,6 +66,11 @@ export const getProfitLoss = (params = {}) => {
   const queryString = new URLSearchParams(params).toString();
   return apiFetch(`/api/profit-loss${queryString ? '?' + queryString : ''}`);
 };
+export const getRevenueTrends = (months = 6) => apiFetch(`/api/analytics/revenue-trends?months=${months}`);
+export const getClientRevenue = () => apiFetch('/api/analytics/client-revenue');
+export const getPlatformEarnings = () => apiFetch('/api/analytics/platform-earnings');
+export const getAgingReport = () => apiFetch('/api/analytics/aging-report');
+export const exportAnalyticsPdf = () => apiFetch('/api/analytics/export-pdf');
 
 // Projects / CRM
 export const getProjects = () => apiFetch('/api/projects');
@@ -79,6 +87,7 @@ export const syncPlatformConnection = (id) => apiFetch(`/api/platform-connection
 export const getRecurringExpenses = () => apiFetch('/api/recurring-expenses');
 export const createRecurringExpense = (data) => apiFetch('/api/recurring-expenses', { method: 'POST', body: JSON.stringify(data) });
 export const deleteRecurringExpense = (id) => apiFetch(`/api/recurring-expenses/${id}`, { method: 'DELETE' });
+export const toggleRecurringExpenseRule = (id, is_active) => apiFetch(`/api/recurring-expenses/${id}/toggle`, { method: 'PATCH', body: JSON.stringify({ is_active }) });
 export const processRecurringExpenses = () => apiFetch('/api/recurring-expenses/process', { method: 'POST' });
 
 // Receipt Upload
@@ -108,4 +117,4 @@ export const updateUserProfile = (data) => apiFetch('/api/profile', { method: 'P
 
 export const getDashboardData = () => apiFetch('/api/dashboard');
 export const getSubscriptions = () => apiFetch('/api/subscriptions');
-export const createSubscription = (planType) => apiFetch('/api/subscriptions/create', { method: 'POST', body: JSON.stringify({ plan_type: planType }) });
+export const createSubscription = (planType) => apiFetch('/api/subscriptions/create', { method: 'POST', body: JSON.stringify({ plan_type: planType }) });

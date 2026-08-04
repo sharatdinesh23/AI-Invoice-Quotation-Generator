@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 
 GMAIL_SEARCH_QUERY = (
     'newer_than:60d ('
-    'subject:(project OR offer OR contract OR proposal OR milestone OR "job post" OR interview) '
+    'subject:(project OR offer OR contract OR proposal OR milestone OR "job post" OR interview OR invoice OR payment OR remittance OR paid) '
     'OR from:(upwork.com OR notifications.upwork.com OR fiverr.com OR mail.fiverr.com)'
     ')'
 )
@@ -26,6 +26,9 @@ LINK_PATTERNS = {
     "upwork": re.compile(r'https?://(?:www\.)?upwork\.com/[^\s<>"\']+', re.I),
     "fiverr": re.compile(r'https?://(?:www\.)?fiverr\.com/[^\s<>"\']+', re.I),
 }
+
+INVOICE_NUMBER_PATTERN = re.compile(r'(?:INV[-_\#]?\d+|invoice\s*[\#\:\s]*\d+)', re.I)
+PAYMENT_CONFIRMATION_PATTERN = re.compile(r'(?:payment\s+received|remittance\s+advice|payout\s+processed|funds\s+transferred|paid\s+in\s+full)', re.I)
 
 
 def _header_value(headers: List[dict], name: str) -> str:
@@ -91,7 +94,7 @@ def extract_external_link(body: str, source: str) -> Optional[str]:
 
 
 def parse_gmail_message(msg: dict) -> dict:
-    """Turn a Gmail API message into a project draft dict."""
+    """Turn a Gmail API message into a project draft dict with payment/invoice mention flags."""
     payload = msg.get("payload", {})
     headers = payload.get("headers", [])
     subject = _header_value(headers, "Subject") or "Untitled Project"
@@ -102,9 +105,13 @@ def parse_gmail_message(msg: dict) -> dict:
     budget, currency = extract_budget(combined)
     external_link = extract_external_link(body, source)
 
+    inv_match = INVOICE_NUMBER_PATTERN.search(combined)
+    is_payment = bool(PAYMENT_CONFIRMATION_PATTERN.search(combined))
+    invoice_ref = inv_match.group(0) if inv_match else None
+
     status = "todo"
     lower = combined.lower()
-    if any(k in lower for k in ("completed", "delivered", "closed")):
+    if is_payment or any(k in lower for k in ("completed", "delivered", "closed", "paid")):
         status = "completed"
     elif any(k in lower for k in ("in progress", "started", "milestone")):
         status = "in_progress"
@@ -113,10 +120,18 @@ def parse_gmail_message(msg: dict) -> dict:
     elif any(k in lower for k in ("offer", "proposal", "invitation")):
         status = "backlog"
 
+    extra_info = []
+    if invoice_ref:
+        extra_info.append(f"Mentioned Invoice: {invoice_ref}")
+    if is_payment:
+        extra_info.append("Type: Payment Confirmation")
+
+    extra_str = f" ({', '.join(extra_info)})" if extra_info else ""
     snippet = (body or subject)[:500].strip()
+
     return {
         "title": subject[:200],
-        "description": f"Auto-detected from email ({sender}).\n\n{snippet}",
+        "description": f"Auto-detected from email ({sender}){extra_str}.\n\n{snippet}",
         "status": status,
         "source": source,
         "budget": budget,
@@ -125,6 +140,7 @@ def parse_gmail_message(msg: dict) -> dict:
         "gmail_message_id": msg.get("id"),
         "email_sender": sender[:255],
     }
+
 
 
 async def project_exists_by_gmail_id(
